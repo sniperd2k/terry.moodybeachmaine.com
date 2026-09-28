@@ -1,0 +1,21 @@
+{
+  "name": "terry-moodybeachmaine-com",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Terry's 8-bit beach — playful sea-glass crab game for terry.moodybeachmaine.com",
+  "scripts": {
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "serve": "npx --yes serve -l 4177 .",
+    "test:gate": "vitest run && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "jsdom": "^25.0.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
