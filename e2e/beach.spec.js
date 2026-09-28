@@ -415,31 +415,26 @@ test('seagull drop-off lands Terry at bottom center', async ({ page }) => {
 });
 
 
-test('seagull multi-caw + miss poop + unlock during exit + wash/stick', async ({ page }) => {
+test('seagull dual multi-caw + vertical exit + slow angled poop + stick-until-fart', async ({ page }) => {
   await page.setViewportSize({ width: 400, height: 600 });
   await page.goto('/?speed=100');
   await page.waitForFunction(() => window.__TERRY__?.getState);
 
-  // Inject seagull enter → watch multi-caw via monkeypatch play count on __TERRY__
-  const cawCount = await page.evaluate(async () => {
+  // Arrival multi-caw; stick survives pickup
+  await page.evaluate(() => {
     const s = window.__TERRY__.getState();
     window.__TERRY__.setSpeedMultiplier(100);
     s.mode = 'flying';
     s.fartTimer = 3.3;
     s.terry.y = -60;
     s.poopStuck = true;
-    // Count seagullCaw by stepping through exposed update is hard; observe state fields
-    // Drive via RAF at 100x — wait for seagull mode then read cawsPlayed
-    return true;
   });
-  expect(cawCount).toBe(true);
 
   await page.waitForFunction(() => {
     const s = window.__TERRY__.getState();
     return s.mode === 'seagull' || (s.seagull && s.seagull.cawsPlayed >= 1);
   }, { timeout: 5000 });
 
-  // Let caws accumulate during enter
   await page.waitForFunction(() => {
     const s = window.__TERRY__.getState();
     return s.seagull && s.seagull.cawsPlayed >= 2;
@@ -449,15 +444,15 @@ test('seagull multi-caw + miss poop + unlock during exit + wash/stick', async ({
     const s = window.__TERRY__.getState();
     return {
       caws: s.seagull?.cawsPlayed ?? 0,
-      stuckCleared: s.poopStuck === false,
+      stuckStill: s.poopStuck === true,
       mode: s.mode,
     };
   });
   expect(mid.caws).toBeGreaterThanOrEqual(2);
   expect(mid.caws).toBeLessThanOrEqual(3);
-  expect(mid.stuckCleared).toBe(true);
+  expect(mid.stuckStill).toBe(true); // NOT cleared on seagull pickup
 
-  // Jump to near-drop carry so we don't wait full flight at flaky timing
+  // Jump to near-drop carry; pre-set poopDropAt=0.75 so 100x doesn't spawn before we assert
   await page.evaluate(() => {
     const s = window.__TERRY__.getState();
     const landX = s.w / 2;
@@ -472,10 +467,14 @@ test('seagull multi-caw + miss poop + unlock during exit + wash/stick', async ({
       bob: 0,
       cawsPlayed: 3,
       nextCawAt: 99,
+      cawClock: 99,
+      poopDropped: false,
+      poopDropAt: 0.75, // max window — survives drop assign
     };
     s.terry.x = landX;
     s.terry.y = landY - 12;
     s.poops = [];
+    window.__TERRY__.setSpeedMultiplier(10); // moderate so exit asserts are stable
   });
 
   await page.waitForFunction(() => {
@@ -485,28 +484,38 @@ test('seagull multi-caw + miss poop + unlock during exit + wash/stick', async ({
 
   const drop = await page.evaluate(() => {
     const s = window.__TERRY__.getState();
-    const p = s.poops[0];
     return {
       mode: s.mode,
       phase: s.seagull?.phase,
       terryX: s.terry.x,
       expectX: s.w / 2,
-      poopX: p?.x,
-      poopPhase: p?.phase,
-      offset: p ? Math.abs(p.x - s.terry.x) : 0,
+      vx: s.seagull?.vx,
+      vy: s.seagull?.vy,
+      poopDropped: s.seagull?.poopDropped,
+      poopDropAt: s.seagull?.poopDropAt,
+      poopCount: s.poops.length,
+      cawsAfterDrop: s.seagull?.cawsPlayed,
     };
   });
   expect(drop.mode).toBe('play');
   expect(drop.phase).toBe('exit');
   expect(Math.abs(drop.terryX - drop.expectX)).toBeLessThan(1);
-  expect(drop.poopX).toBeDefined();
-  expect(drop.offset).toBeGreaterThanOrEqual(20);
-  expect(drop.poopX).not.toBe(drop.terryX);
+  // Vertical exit
+  expect(Math.abs(drop.vx)).toBeLessThan(0.01);
+  expect(drop.vy).toBeLessThan(0);
+  // Poop deferred (pre-set 0.75 window)
+  expect(drop.poopDropped).toBe(false);
+  expect(drop.poopCount).toBe(0);
+  expect(drop.poopDropAt).toBeGreaterThanOrEqual(0.25);
+  expect(drop.poopDropAt).toBeLessThanOrEqual(0.75);
+  // After-drop multi-caw burst started
+  expect(drop.cawsAfterDrop).toBeGreaterThanOrEqual(1);
+  expect(drop.cawsAfterDrop).toBeLessThanOrEqual(3);
 
   // Move while seagull still exiting
   const before = await page.evaluate(() => window.__TERRY__.getState().terry.x);
   await page.keyboard.down('d');
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(250);
   await page.keyboard.up('d');
   const afterMove = await page.evaluate(() => {
     const s = window.__TERRY__.getState();
@@ -515,7 +524,44 @@ test('seagull multi-caw + miss poop + unlock during exit + wash/stick', async ({
   expect(afterMove.mode).toBe('play');
   expect(afterMove.x).toBeGreaterThan(before + 2);
 
-  // Stick-on-hit: place falling poop on Terry
+  // Reinject controlled vertical exit at 1x to observe slow angled poop spawn
+  await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    window.__TERRY__.setSpeedMultiplier(5);
+    const startY = s.h - s.terry.r - 8 - 28;
+    const total = startY - (-60);
+    s.mode = 'play';
+    s.seagull = {
+      x: s.w / 2,
+      y: startY - total * 0.29, // just under 0.3 threshold
+      vx: 0,
+      vy: -140,
+      phase: 'exit',
+      bob: 0,
+      cawsPlayed: 3,
+      nextCawAt: 99,
+      cawClock: 99,
+      exitStartY: startY,
+      poopDropped: false,
+      poopDropAt: 0.3,
+    };
+    s.poops = [];
+    s.waveHitThisCycle = true;
+    s.glass = [];
+  });
+  const poop = await page.waitForFunction(() => {
+    const s = window.__TERRY__.getState();
+    const p = s.poops.find((q) => q.phase === 'falling');
+    if (!p) return null;
+    return { vy: p.vy, vx: p.vx, phase: p.phase, dropped: s.seagull?.poopDropped === true };
+  }, { timeout: 8000 }).then((h) => h.jsonValue());
+  expect(poop.dropped).toBe(true);
+  expect(poop.phase).toBe('falling');
+  expect(poop.vy).toBeLessThanOrEqual(60);
+  expect(Math.abs(poop.vx)).toBeGreaterThan(0);
+  await page.evaluate(() => window.__TERRY__.setSpeedMultiplier(100));
+
+  // Stick-on-hit
   await page.evaluate(() => {
     const s = window.__TERRY__.getState();
     s.poopStuck = false;
@@ -524,24 +570,25 @@ test('seagull multi-caw + miss poop + unlock during exit + wash/stick', async ({
       x: s.terry.x,
       y: s.terry.y - 30,
       r: 5,
-      vy: 220,
+      vx: 0,
+      vy: 42,
       phase: 'falling',
     }];
   });
-  await page.waitForFunction(() => window.__TERRY__.getState().poopStuck === true, { timeout: 3000 });
+  await page.waitForFunction(() => window.__TERRY__.getState().poopStuck === true, { timeout: 5000 });
 
   // Wash: ground stain + deep water
   await page.evaluate(() => {
     const s = window.__TERRY__.getState();
     s.poops = [{ id: 7, x: 200, y: 60, r: 5, vy: 0, phase: 'ground' }];
-    s.time = 4; // near peak tide
+    s.time = 4;
   });
   await page.waitForFunction(() => {
     const s = window.__TERRY__.getState();
     return s.poops.length === 0;
   }, { timeout: 3000 });
 
-  // Stuck clears on next seagull pickup
+  // Stuck survives seagull pickup
   expect(await page.evaluate(() => window.__TERRY__.getState().poopStuck)).toBe(true);
   await page.evaluate(() => {
     const s = window.__TERRY__.getState();
@@ -551,6 +598,18 @@ test('seagull multi-caw + miss poop + unlock during exit + wash/stick', async ({
   });
   await page.waitForFunction(() => {
     const s = window.__TERRY__.getState();
-    return s.mode === 'seagull' && s.poopStuck === false;
+    return s.mode === 'seagull' && s.poopStuck === true;
   }, { timeout: 3000 });
+
+  // Stick clears on fart-finale leave (beginFart) — not on seagull pickup (already asserted)
+  const finale = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    s.mode = 'play';
+    s.seagull = null;
+    s.poopStuck = true;
+    window.__TERRY__.beginFart();
+    return { mode: s.mode, stuck: s.poopStuck };
+  });
+  expect(finale.mode).toBe('farting');
+  expect(finale.stuck).toBe(false);
 });

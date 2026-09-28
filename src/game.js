@@ -66,16 +66,26 @@ export const WAVE_BOUNCE_VY = 420;
 export const DROP_IMMUNE_SEC = 0.45;
 /** Px above canvas bottom for playable crab rest (wave bounce + seagull drop-off). */
 export const BOTTOM_PLAYABLE_MARGIN = 8;
-/** Seagull caws on return/pickup interact: 2–3 spaced plays. */
+/** Seagull multi-caw burst size (2–3 spaced plays) — arrival AND after drop. */
 export const SEAGULL_CAW_COUNT = 3;
-/** Seconds between spaced seagull caws. */
+/** Seconds between spaced seagull caws within a burst. */
 export const SEAGULL_CAW_SPACING = 0.28;
 /** Pixel seagull poop radius (falling + ground stain). */
 export const POOP_RADIUS = 5;
-/** Fall speed for drop-off poop (px/sec). */
-export const POOP_FALL_VY = 160;
-/** Minimum horizontal miss offset from Terry center (near-miss beside her). */
+/** Fall speed for exit poop (px/sec) — really slow so Terry can intercept. */
+export const POOP_FALL_VY = 42;
+/** Lateral speed for angled poop (px/sec); lands offset, not straight under bird. */
+export const POOP_LATERAL_VX = 48;
+/** Minimum horizontal miss/land offset reference (legacy + tests). */
 export const POOP_MISS_OFFSET = 32;
+/** Exit poop drop window: fraction of straight-up off-screen progress. */
+export const POOP_DROP_PROGRESS_MIN = 0.25;
+export const POOP_DROP_PROGRESS_MAX = 0.75;
+/** Straight-up exit velocity (vy negative, vx ≈ 0). */
+export const SEAGULL_EXIT_VY = -140;
+export const SEAGULL_EXIT_VX = 0;
+/** Y above which seagull is considered off-screen on vertical exit. */
+export const SEAGULL_OFFSCREEN_Y = -60;
 /** Seagull drop-off X: canvas horizontal center. */
 export function dropOffX(w) {
   return w / 2;
@@ -86,26 +96,52 @@ export function dropOffY(h, terryR) {
 }
 
 /**
- * Near-miss poop X beside Terry (not centered on her).
+ * Near-miss / lateral side helper (-1 left / +1 right; default random).
+ */
+export function poopSide(side = null) {
+  return side == null ? (Math.random() < 0.5 ? -1 : 1) : (side < 0 ? -1 : 1);
+}
+
+/**
+ * Near-miss poop X beside a reference (not centered).
  * side: -1 left / +1 right; default random.
  */
 export function poopMissX(terryX, w, side = null) {
-  const s = side == null ? (Math.random() < 0.5 ? -1 : 1) : (side < 0 ? -1 : 1);
+  const s = poopSide(side);
   const x = terryX + s * POOP_MISS_OFFSET;
   return Math.max(POOP_RADIUS + 2, Math.min(w - POOP_RADIUS - 2, x));
 }
 
-/** Spawn a falling near-miss poop at drop-off (offset from Terry). */
-export function spawnDropPoop(state, side = null) {
-  const landX = dropOffX(state.w);
-  const landY = dropOffY(state.h, state.terry.r);
-  const x = poopMissX(landX, state.w, side);
-  const y = Math.max(POOP_RADIUS, (state.seagull?.y ?? landY - 28));
+/**
+ * Progress 0..1 of seagull straight-up exit (drop Y → off-screen).
+ */
+export function seagullExitProgress(g, offY = SEAGULL_OFFSCREEN_Y) {
+  const start = typeof g.exitStartY === 'number' ? g.exitStartY : g.y;
+  const total = start - offY;
+  if (!(total > 0)) return 1;
+  return Math.max(0, Math.min(1, (start - g.y) / total));
+}
+
+/** Randomize poop drop within 25%–75% of exit progress. */
+export function randomPoopDropProgress() {
+  return POOP_DROP_PROGRESS_MIN + Math.random() * (POOP_DROP_PROGRESS_MAX - POOP_DROP_PROGRESS_MIN);
+}
+
+/**
+ * Spawn falling angled poop from seagull during vertical exit.
+ * Lateral vx so it lands offset (not straight under bird). Falls slowly.
+ */
+export function spawnExitPoop(state, side = null) {
+  const g = state.seagull;
+  const s = poopSide(side);
+  const x = g ? g.x : dropOffX(state.w);
+  const y = g ? g.y + 6 : Math.max(POOP_RADIUS, 40);
   const poop = {
     id: state.nextPoopId++,
     x,
     y,
     r: POOP_RADIUS,
+    vx: s * POOP_LATERAL_VX,
     vy: POOP_FALL_VY,
     /** falling | ground */
     phase: 'falling',
@@ -114,14 +150,43 @@ export function spawnDropPoop(state, side = null) {
   return poop;
 }
 
+/** @deprecated alias — exit-window spawn is preferred; kept for harness/tests. */
+export function spawnDropPoop(state, side = null) {
+  return spawnExitPoop(state, side);
+}
+
 /** True when water edge covers a ground stain (wave wash). */
 export function waterCoversPoop(waterY, poop) {
   return waterY >= poop.y - poop.r;
 }
 
-/** Clear poop stuck on Terry (seagull pickup/carry). */
+/** Clear poop stuck on Terry (fart-finale leave — NOT seagull pickup). */
 export function clearTerryPoopStuck(state) {
   state.poopStuck = false;
+}
+
+/** Start a multi-caw burst (arrival or after-drop). Returns first-caw event flag. */
+export function startSeagullCawBurst(g) {
+  g.cawsPlayed = 1;
+  g.nextCawAt = SEAGULL_CAW_SPACING;
+  g.cawClock = 0;
+  return true;
+}
+
+/** Advance spaced multi-caw within a burst. Mutates g; returns true if a caw fires. */
+export function tickSeagullCawBurst(g, dt) {
+  if (typeof g.cawsPlayed !== 'number') {
+    g.cawsPlayed = 0;
+    g.nextCawAt = 0;
+    g.cawClock = 0;
+  }
+  g.cawClock = (g.cawClock || 0) + dt;
+  if (g.cawsPlayed < SEAGULL_CAW_COUNT && g.cawClock >= g.nextCawAt) {
+    g.cawsPlayed += 1;
+    g.nextCawAt = g.cawsPlayed * SEAGULL_CAW_SPACING;
+    return true;
+  }
+  return false;
 }
 /** Minimum px below waterline for catchable beach spawn. */
 export const GLASS_SPAWN_BELOW_WATER = 24;
@@ -258,7 +323,7 @@ export function createState(w, h) {
     /** Falling / ground poop stains (washable by wave). */
     poops: [],
     nextPoopId: 1,
-    /** Poop stuck on crab until next seagull pickup/carry. */
+    /** Poop stuck on crab until fart-finale leave (not cleared on seagull pickup). */
     poopStuck: false,
     keys: {
       w: false,
@@ -408,6 +473,8 @@ export function beginFart(state) {
   // Held cents clear when finale starts so the next 10¢ can re-trigger
   state.currentCents = 0;
   state.score = 0;
+  // Stick clears when crab leaves by farting; she returns clean (not on seagull pickup)
+  clearTerryPoopStuck(state);
   state.fartClouds = [];
   for (let i = 0; i < 16; i++) {
     state.fartClouds.push({
@@ -435,7 +502,7 @@ export function afterFinaleReset(state) {
   state.terry.y = state.h * 0.72;
   state.terry.vx = 0;
   state.terry.vy = 0;
-  // Ground poops stay (washable); stuck cleared on next pickup, not here
+  // Ground poops stay (washable); stuck already cleared on beginFart
 }
 
 /** Finish seagull exit without yanking Terry — control already unlocked on drop. */
@@ -544,8 +611,7 @@ export function update(state, dt) {
       state.mode = 'seagull';
       state.fartTimer = 0;
       state.fartClouds = [];
-      // Pickup clears any poop stuck on Terry from a prior near-hit
-      clearTerryPoopStuck(state);
+      // Do NOT clear poopStuck here — stick lasts until fart-finale leave
       state.seagull = {
         x: -40,
         y: 40,
@@ -555,14 +621,16 @@ export function update(state, dt) {
         bob: 0,
         cawsPlayed: 0,
         nextCawAt: 0,
+        cawClock: 0,
+        poopDropped: false,
+        poopDropAt: 1,
+        exitStartY: null,
       };
       state.terry.x = -60;
       state.terry.y = 70;
       events.seagull = true;
-      // First of 2–3 spaced caws on return/pickup interact
-      events.seagullCaw = true;
-      state.seagull.cawsPlayed = 1;
-      state.seagull.nextCawAt = SEAGULL_CAW_SPACING;
+      // Multi-caw burst #1: when seagull SHOWS UP (arrival)
+      events.seagullCaw = startSeagullCawBurst(state.seagull);
     }
     return events;
   }
@@ -571,16 +639,8 @@ export function update(state, dt) {
     const g = state.seagull;
     state.fartTimer += dt;
     g.bob += dt * 6;
-    if (typeof g.cawsPlayed !== 'number') {
-      g.cawsPlayed = 0;
-      g.nextCawAt = 0;
-    }
-    // Spaced multi-caw (2–3) while returning / interacting with Terry
-    if (g.cawsPlayed < SEAGULL_CAW_COUNT && state.fartTimer >= g.nextCawAt) {
-      events.seagullCaw = true;
-      g.cawsPlayed += 1;
-      g.nextCawAt = g.cawsPlayed * SEAGULL_CAW_SPACING;
-    }
+    // Arrival multi-caw burst while enter/carry
+    if (tickSeagullCawBurst(g, dt)) events.seagullCaw = true;
     if (g.phase === 'enter') {
       g.x += g.vx * dt;
       g.y = 40 + Math.sin(g.bob) * 8;
@@ -612,10 +672,20 @@ export function update(state, dt) {
         g.x = landX;
         g.y = landY - 28;
         g.phase = 'exit';
-        g.vx = 160;
-        g.vy = -80;
-        // Near-miss poop (offset beside Terry) then unlock control immediately
-        spawnDropPoop(state);
+        // Straight UP exit (not angled): vy negative, vx ≈ 0
+        g.vx = SEAGULL_EXIT_VX;
+        g.vy = SEAGULL_EXIT_VY;
+        g.exitStartY = g.y;
+        g.poopDropped = false;
+        // Harness may pre-set poopDropAt; otherwise randomize in 25–75% window
+        if (!(typeof g.poopDropAt === 'number'
+              && g.poopDropAt >= POOP_DROP_PROGRESS_MIN
+              && g.poopDropAt <= POOP_DROP_PROGRESS_MAX)) {
+          g.poopDropAt = randomPoopDropProgress();
+        }
+        // Multi-caw burst #2: AFTER drop-off
+        events.seagullCaw = startSeagullCawBurst(g);
+        // Unlock control immediately — poop drops later during vertical exit
         state.mode = 'play';
         state.terry.vx = 0;
         state.terry.vy = 0;
@@ -623,9 +693,14 @@ export function update(state, dt) {
       }
     } else if (g.phase === 'exit') {
       // Should not linger in seagull+exit — unlock sets mode play — but keep safe
+      if (tickSeagullCawBurst(g, dt)) events.seagullCaw = true;
       g.x += g.vx * dt;
       g.y += g.vy * dt;
-      if (g.x > state.w + 60 || g.y < -60) {
+      if (!g.poopDropped && seagullExitProgress(g) >= (g.poopDropAt ?? POOP_DROP_PROGRESS_MIN)) {
+        spawnExitPoop(state);
+        g.poopDropped = true;
+      }
+      if (g.y < SEAGULL_OFFSCREEN_Y || g.x > state.w + 60 || g.x < -60) {
         finishSeagullExit(state);
       }
       return events;
@@ -635,13 +710,18 @@ export function update(state, dt) {
     // else dropped → continue into play movement below
   }
 
-  // Seagull exit flight continues while Terry is already free in play mode
+  // Seagull vertical exit + delayed angled poop while Terry is free in play mode
   if (state.mode === 'play' && state.seagull && state.seagull.phase === 'exit') {
     const g = state.seagull;
     g.bob = (g.bob || 0) + dt * 6;
+    if (tickSeagullCawBurst(g, dt)) events.seagullCaw = true;
     g.x += g.vx * dt;
     g.y += g.vy * dt;
-    if (g.x > state.w + 60 || g.y < -60) {
+    if (!g.poopDropped && seagullExitProgress(g) >= (g.poopDropAt ?? POOP_DROP_PROGRESS_MIN)) {
+      spawnExitPoop(state);
+      g.poopDropped = true;
+    }
+    if (g.y < SEAGULL_OFFSCREEN_Y || g.x > state.w + 60 || g.x < -60) {
       finishSeagullExit(state);
     }
   }
@@ -652,7 +732,10 @@ export function update(state, dt) {
     const nextPoops = [];
     for (const p of state.poops) {
       if (p.phase === 'falling') {
+        p.x += (p.vx || 0) * dt;
         p.y += p.vy * dt;
+        // Keep on-canvas horizontally
+        p.x = Math.max(p.r + 1, Math.min(state.w - p.r - 1, p.x));
         if (
           !state.poopStuck &&
           overlaps(state.terry.x, state.terry.y, state.terry.r, p.x, p.y, p.r)
@@ -666,6 +749,7 @@ export function update(state, dt) {
           p.y = groundY;
           p.phase = 'ground';
           p.vy = 0;
+          p.vx = 0;
           events.poopLand = true;
         }
         nextPoops.push(p);

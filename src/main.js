@@ -16,6 +16,7 @@ import {
   setSpeedMultiplier,
   parseSpeedFromSearch,
   parseDevFromSearch,
+  beginFart,
 } from './game.js';
 import {
   drawBeach,
@@ -231,6 +232,7 @@ window.__TERRY__ = {
   getAudioState,
   AUDIO_UNLOCK_EVENTS,
   applyWaveHit: () => (state ? applyWaveHit(state) : null),
+  beginFart: () => (state ? beginFart(state) : null),
   GLASS_SPAWN_BELOW_WATER,
   FINALE_CENTS,
   WAVE_GLASS_PUSH_FRAC,

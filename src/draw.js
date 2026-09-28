@@ -162,7 +162,7 @@ export function drawPoop(ctx, x, y, opts = {}) {
   }
 }
 
-/** Tiny stuck poop on crab shell (cleared on next seagull pickup). */
+/** Tiny stuck poop on crab shell (cleared on fart-finale leave, not seagull pickup). */
 export function drawPoopStuckOnCrab(ctx, terryX, terryY) {
   drawPoop(ctx, terryX + 6, terryY - 8, { scale: 2, stain: false });
 }
