@@ -49,6 +49,9 @@ import {
   POOP_RADIUS,
   POOP_FALL_VY,
   POOP_LATERAL_VX,
+  POOP_ZIG_AMPLITUDE,
+  POOP_ZIG_PERIOD,
+  poopFallVx,
   POOP_DROP_PROGRESS_MIN,
   POOP_DROP_PROGRESS_MAX,
   SEAGULL_EXIT_VY,
@@ -611,6 +614,8 @@ describe('seagull dual multi-caw + vertical exit + slow angled poop + stick-unti
     expect(POOP_FALL_VY).toBeLessThanOrEqual(60);
     expect(POOP_FALL_VY).toBeGreaterThan(10);
     expect(POOP_LATERAL_VX).toBeGreaterThan(0);
+    expect(POOP_ZIG_AMPLITUDE).toBeGreaterThan(0);
+    expect(POOP_ZIG_PERIOD).toBeGreaterThan(0);
     expect(SEAGULL_EXIT_VX).toBe(0);
     expect(SEAGULL_EXIT_VY).toBeLessThan(0);
     for (let i = 0; i < 40; i++) {
@@ -780,12 +785,15 @@ describe('seagull dual multi-caw + vertical exit + slow angled poop + stick-unti
     expect(p.phase).toBe('falling');
     expect(p.vy).toBe(POOP_FALL_VY);
     expect(Math.abs(p.vx)).toBe(POOP_LATERAL_VX);
-    // Angled: lateral velocity so it drifts off bird line
+    expect(typeof p.age).toBe('number');
+    expect(p.age).toBeLessThanOrEqual(FIXED_DT + 1e-9);
+    // Angled + zig: drifts off bird line (not stationary under bird)
     const spawnX = p.x;
     for (let i = 0; i < 30; i++) update(state, FIXED_DT);
     const falling = state.poops.find((q) => q.phase === 'falling') || state.poops[0];
     if (falling && falling.phase === 'falling') {
       expect(Math.abs(falling.x - spawnX)).toBeGreaterThan(1);
+      expect(falling.age).toBeGreaterThan(0);
     }
   });
 
@@ -968,6 +976,86 @@ describe('seagull dual multi-caw + vertical exit + slow angled poop + stick-unti
     expect(draw).toContain('drawPoopStuckOnCrab');
     const audio = readFileSync(join(root, 'src/audio.js'), 'utf8');
     expect(audio).toContain('playSeagull');
+  });
+});
+
+describe('poop fall zig-zag (not constant vx diagonal)', () => {
+  it('constants: zig amplitude and period make chase-worthy wiggle', () => {
+    expect(POOP_ZIG_AMPLITUDE).toBe(62);
+    expect(POOP_ZIG_PERIOD).toBe(0.6);
+    expect(POOP_ZIG_AMPLITUDE).toBeGreaterThan(POOP_LATERAL_VX * 0.5);
+    // At quarter/three-quarter period, sine peaks reverse lateral relative to bias
+    const base = POOP_LATERAL_VX;
+    const v0 = poopFallVx(base, 0);
+    const vPeak = poopFallVx(base, POOP_ZIG_PERIOD / 4);
+    const vTrough = poopFallVx(base, (3 * POOP_ZIG_PERIOD) / 4);
+    expect(v0).toBeCloseTo(base, 5);
+    expect(vPeak).toBeGreaterThan(base);
+    expect(vTrough).toBeLessThan(base);
+    expect(vPeak).not.toBe(vTrough);
+    // Amplitude can overcome bias → actual direction flip (chase)
+    expect(vTrough).toBeLessThan(0);
+  });
+
+  it('falling path is not a straight constant-vx diagonal', () => {
+    const state = createState(400, 600);
+    state.waveHitThisCycle = true;
+    state.glass = [];
+    state.poopStuck = false;
+    state.terry.x = 20;
+    state.terry.y = dropOffY(600, state.terry.r);
+    state.poops = [
+      {
+        id: 42,
+        x: 200,
+        y: 40,
+        r: POOP_RADIUS,
+        vx: POOP_LATERAL_VX,
+        vy: POOP_FALL_VY,
+        age: 0,
+        phase: 'falling',
+      },
+    ];
+
+    const xs = [];
+    const vels = [];
+    for (let i = 0; i < 90; i++) {
+      const p = state.poops.find((q) => q.phase === 'falling');
+      if (!p) break;
+      const beforeX = p.x;
+      const ageBefore = p.age || 0;
+      update(state, FIXED_DT);
+      const after = state.poops.find((q) => q.phase === 'falling');
+      if (!after) break;
+      xs.push(after.x);
+      // Reconstruct step velocity from displacement
+      vels.push((after.x - beforeX) / FIXED_DT);
+      expect(after.age).toBeCloseTo(ageBefore + FIXED_DT, 5);
+    }
+    expect(xs.length).toBeGreaterThan(40);
+    // Effective vx is not constant (zig-zag), unlike a straight diagonal
+    const uniqueish = new Set(vels.map((v) => Math.round(v * 10) / 10));
+    expect(uniqueish.size).toBeGreaterThan(3);
+    const minV = Math.min(...vels);
+    const maxV = Math.max(...vels);
+    expect(maxV - minV).toBeGreaterThan(POOP_ZIG_AMPLITUDE);
+    // Direction reverses at least once (signed vel crosses)
+    const hasPos = vels.some((v) => v > 5);
+    const hasNeg = vels.some((v) => v < -5);
+    expect(hasPos && hasNeg).toBe(true);
+    // Slow fall preserved
+    const still = state.poops.find((q) => q.phase === 'falling');
+    if (still) expect(still.vy).toBe(POOP_FALL_VY);
+  });
+
+  it('spawnExitPoop keeps angled bias + age 0 for zig start', () => {
+    const state = createState(400, 600);
+    state.seagull = { x: 200, y: 100 };
+    const p = spawnExitPoop(state, 1);
+    expect(p.vx).toBe(POOP_LATERAL_VX);
+    expect(p.vy).toBe(POOP_FALL_VY);
+    expect(p.age).toBe(0);
+    expect(poopFallVx(p.vx, 0)).toBeCloseTo(POOP_LATERAL_VX, 5);
   });
 });
 

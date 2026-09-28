@@ -17,6 +17,7 @@ import {
   parseSpeedFromSearch,
   parseDevFromSearch,
   beginFart,
+  advanceWallTime,
 } from './game.js';
 import {
   drawBeach,
@@ -233,6 +234,7 @@ window.__TERRY__ = {
   AUDIO_UNLOCK_EVENTS,
   applyWaveHit: () => (state ? applyWaveHit(state) : null),
   beginFart: () => (state ? beginFart(state) : null),
+  advanceWallTime: (wallDt, speed) => (state ? advanceWallTime(state, wallDt, speed) : null),
   GLASS_SPAWN_BELOW_WATER,
   FINALE_CENTS,
   WAVE_GLASS_PUSH_FRAC,

@@ -76,6 +76,10 @@ export const POOP_RADIUS = 5;
 export const POOP_FALL_VY = 42;
 /** Lateral speed for angled poop (px/sec); lands offset, not straight under bird. */
 export const POOP_LATERAL_VX = 48;
+/** Zig-zag lateral amplitude (px/sec) while falling — sine wiggle on top of angled bias. */
+export const POOP_ZIG_AMPLITUDE = 62;
+/** Zig-zag sine period (seconds). Not a straight diagonal — Terry must chase. */
+export const POOP_ZIG_PERIOD = 0.6;
 /** Minimum horizontal miss/land offset reference (legacy + tests). */
 export const POOP_MISS_OFFSET = 32;
 /** Exit poop drop window: fraction of straight-up off-screen progress. */
@@ -128,8 +132,18 @@ export function randomPoopDropProgress() {
 }
 
 /**
+ * Effective horizontal velocity while falling: angled bias + sine zig-zag.
+ * age is seconds since spawn. Not constant — path wiggles left/right.
+ */
+export function poopFallVx(baseVx, age) {
+  const t = typeof age === 'number' ? age : 0;
+  const period = POOP_ZIG_PERIOD > 0 ? POOP_ZIG_PERIOD : 1;
+  return (baseVx || 0) + POOP_ZIG_AMPLITUDE * Math.sin((2 * Math.PI * t) / period);
+}
+
+/**
  * Spawn falling angled poop from seagull during vertical exit.
- * Lateral vx so it lands offset (not straight under bird). Falls slowly.
+ * Lateral vx bias + zig-zag while falling. Falls slowly.
  */
 export function spawnExitPoop(state, side = null) {
   const g = state.seagull;
@@ -141,8 +155,11 @@ export function spawnExitPoop(state, side = null) {
     x,
     y,
     r: POOP_RADIUS,
+    /** Base angled lateral bias (px/sec); zig-zag added in update via age. */
     vx: s * POOP_LATERAL_VX,
     vy: POOP_FALL_VY,
+    /** Seconds since spawn — drives sine zig-zag. */
+    age: 0,
     /** falling | ground */
     phase: 'falling',
   };
@@ -732,8 +749,11 @@ export function update(state, dt) {
     const nextPoops = [];
     for (const p of state.poops) {
       if (p.phase === 'falling') {
-        p.x += (p.vx || 0) * dt;
+        if (typeof p.age !== 'number') p.age = 0;
+        const xVel = poopFallVx(p.vx, p.age);
+        p.x += xVel * dt;
         p.y += p.vy * dt;
+        p.age += dt;
         // Keep on-canvas horizontally
         p.x = Math.max(p.r + 1, Math.min(state.w - p.r - 1, p.x));
         if (

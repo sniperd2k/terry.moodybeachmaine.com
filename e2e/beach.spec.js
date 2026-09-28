@@ -559,6 +559,37 @@ test('seagull dual multi-caw + vertical exit + slow angled poop + stick-until-fa
   expect(poop.phase).toBe('falling');
   expect(poop.vy).toBeLessThanOrEqual(60);
   expect(Math.abs(poop.vx)).toBeGreaterThan(0);
+  // Zig-zag: sample falling vx over time — not a constant diagonal
+  await page.evaluate(() => window.__TERRY__.setSpeedMultiplier(1));
+  const zig = await page.evaluate(async () => {
+    const s = window.__TERRY__.getState();
+    const p0 = s.poops.find((q) => q.phase === 'falling');
+    if (!p0) return null;
+    // Ensure age starts known; sample displacements over ~0.75s wall via harness steps
+    const vels = [];
+    let lastX = p0.x;
+    for (let i = 0; i < 50; i++) {
+      window.__TERRY__.advanceWallTime(1 / 60);
+      const p = window.__TERRY__.getState().poops.find((q) => q.phase === 'falling');
+      if (!p) break;
+      vels.push((p.x - lastX) / (1 / 60));
+      lastX = p.x;
+    }
+    const minV = Math.min(...vels);
+    const maxV = Math.max(...vels);
+    return {
+      n: vels.length,
+      spread: maxV - minV,
+      hasPos: vels.some((v) => v > 5),
+      hasNeg: vels.some((v) => v < -5),
+      age: window.__TERRY__.getState().poops.find((q) => q.phase === 'falling')?.age ?? 0,
+    };
+  });
+  expect(zig).not.toBeNull();
+  expect(zig.n).toBeGreaterThan(20);
+  expect(zig.spread).toBeGreaterThan(40);
+  expect(zig.hasPos && zig.hasNeg).toBe(true);
+  expect(zig.age).toBeGreaterThan(0.2);
   await page.evaluate(() => window.__TERRY__.setSpeedMultiplier(100));
 
   // Stick-on-hit
