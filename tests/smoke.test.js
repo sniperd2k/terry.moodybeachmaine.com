@@ -40,6 +40,9 @@ import {
   parseSpeedFromSearch,
   parseDevFromSearch,
   advanceWallTime,
+  dropOffX,
+  dropOffY,
+  BOTTOM_PLAYABLE_MARGIN,
 } from '../src/game.js';
 import { AUDIO_UNLOCK_EVENTS } from '../src/audio.js';
 
@@ -321,8 +324,9 @@ describe('deep waves + wave hit drop + bottom bounce', () => {
     setHeldCents(state, 3);
     state.terry.y = 200;
     applyWaveHit(state);
-    const bottom = state.h - state.terry.r - 8;
+    const bottom = dropOffY(state.h, state.terry.r);
     expect(state.terry.y).toBe(bottom);
+    expect(BOTTOM_PLAYABLE_MARGIN).toBe(8);
     expect(state.terry.vy).toBeGreaterThanOrEqual(WAVE_BOUNCE_VY);
   });
 
@@ -520,6 +524,59 @@ describe('arrow keys + keyboard/mouse input mode', () => {
   });
 });
 
+
+describe('seagull return drop-off = bottom center', () => {
+  it('dropOff helpers: x = w/2, y = h - r - BOTTOM_PLAYABLE_MARGIN', () => {
+    expect(dropOffX(375)).toBe(375 / 2);
+    expect(dropOffX(800)).toBe(400);
+    expect(dropOffY(667, 14)).toBe(667 - 14 - BOTTOM_PLAYABLE_MARGIN);
+    expect(BOTTOM_PLAYABLE_MARGIN).toBe(8);
+  });
+
+  it('seagull carry drops Terry at bottom center (mobile + desktop sizes)', () => {
+    for (const [w, h] of [
+      [375, 667], // mobile
+      [390, 844],
+      [800, 600], // desktop
+    ]) {
+      const state = createState(w, h);
+      state.mode = 'seagull';
+      state.fartTimer = 0;
+      state.seagull = {
+        x: -40,
+        y: 40,
+        vx: 120,
+        vy: 0,
+        phase: 'enter',
+        bob: 0,
+      };
+      state.terry.x = -60;
+      state.terry.y = 70;
+
+      let dropX = null;
+      let dropY = null;
+      for (let i = 0; i < 1200; i++) {
+        update(state, FIXED_DT);
+        if (state.seagull && state.seagull.phase === 'exit' && dropX === null) {
+          dropX = state.terry.x;
+          dropY = state.terry.y;
+          break;
+        }
+        if (state.mode === 'play' && state.seagull === null) break;
+      }
+
+      const expectX = dropOffX(w);
+      const expectY = dropOffY(h, state.terry.r);
+      expect(dropX, `${w}x${h} drop x`).toBeCloseTo(expectX, 5);
+      expect(dropY, `${w}x${h} drop y`).toBe(expectY);
+      // On-screen / bottom-center playable
+      expect(dropX).toBeGreaterThan(0);
+      expect(dropX).toBeLessThan(w);
+      expect(dropY).toBeLessThan(h);
+      expect(dropY).toBeGreaterThan(h * 0.5);
+    }
+  });
+});
 
 describe('100x speed mode (logic/scoring verification)', () => {
   afterEach(() => {

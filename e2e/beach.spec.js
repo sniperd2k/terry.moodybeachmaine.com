@@ -361,3 +361,55 @@ test('default load is 1x (speed mode off)', async ({ page }) => {
   const speed = await page.evaluate(() => window.__TERRY__.getSpeedMultiplier());
   expect(speed).toBe(1);
 });
+
+test('seagull drop-off lands Terry at bottom center', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?speed=100');
+  await page.waitForFunction(() => window.__TERRY__?.getState);
+
+  await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    window.__TERRY__.setSpeedMultiplier(100);
+    s.mode = 'seagull';
+    s.fartTimer = 0;
+    s.fartClouds = [];
+    s.seagull = {
+      x: -40,
+      y: 40,
+      vx: 120,
+      vy: 0,
+      phase: 'enter',
+      bob: 0,
+    };
+    s.terry.x = -60;
+    s.terry.y = 70;
+  });
+
+  await page.waitForFunction(() => {
+    const s = window.__TERRY__.getState();
+    return s.seagull && s.seagull.phase === 'exit';
+  }, { timeout: 5000 });
+
+  const drop = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    const expectX = s.w / 2;
+    const expectY = s.h - s.terry.r - 8;
+    return {
+      x: s.terry.x,
+      y: s.terry.y,
+      expectX,
+      expectY,
+      w: s.w,
+      h: s.h,
+      phase: s.seagull?.phase,
+    };
+  });
+
+  expect(drop.phase).toBe('exit');
+  expect(Math.abs(drop.x - drop.expectX)).toBeLessThan(1);
+  expect(drop.y).toBe(drop.expectY);
+  expect(drop.x).toBeGreaterThan(0);
+  expect(drop.x).toBeLessThan(drop.w);
+  expect(drop.y).toBeLessThan(drop.h);
+  expect(drop.y).toBeGreaterThan(drop.h * 0.5);
+});

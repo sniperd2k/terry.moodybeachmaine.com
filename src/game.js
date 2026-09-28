@@ -64,6 +64,16 @@ export const WAVE_BOUNCE = 110;
 export const WAVE_BOUNCE_VY = 420;
 /** Seconds freshly dropped glass cannot be re-collected (touch follow fix). */
 export const DROP_IMMUNE_SEC = 0.45;
+/** Px above canvas bottom for playable crab rest (wave bounce + seagull drop-off). */
+export const BOTTOM_PLAYABLE_MARGIN = 8;
+/** Seagull drop-off X: canvas horizontal center. */
+export function dropOffX(w) {
+  return w / 2;
+}
+/** Seagull drop-off / bottom-playable Y: h - terryR - BOTTOM_PLAYABLE_MARGIN. */
+export function dropOffY(h, terryR) {
+  return h - terryR - BOTTOM_PLAYABLE_MARGIN;
+}
 /** Minimum px below waterline for catchable beach spawn. */
 export const GLASS_SPAWN_BELOW_WATER = 24;
 /** Fraction of beach depth (water→bottom) used for random glass height sprinkle. */
@@ -301,7 +311,7 @@ export function collectGlass(state, glass) {
  */
 export function applyWaveHit(state) {
   // Strong knock to bottom of screen
-  const bottomY = state.h - state.terry.r - 8;
+  const bottomY = dropOffY(state.h, state.terry.r);
   state.terry.y = bottomY;
   state.terry.vy = Math.max(state.terry.vy, WAVE_BOUNCE_VY);
 
@@ -492,21 +502,30 @@ export function update(state, dt) {
       // Carry crab under seagull
       state.terry.x = g.x;
       state.terry.y = g.y + 28;
-      const targetX = state.w / 2;
+      const targetX = dropOffX(state.w);
       if (g.x >= targetX - 8) {
         g.phase = 'carry';
-        g.vx = 40;
-        g.vy = 90;
+        // Aim descent at bottom-center so drop stays on-screen (esp. mobile)
+        const landX = dropOffX(state.w);
+        const landY = dropOffY(state.h, state.terry.r);
+        const terryY = g.y + 28;
+        const dur = Math.max((landY - terryY) / 90, FIXED_DT);
+        g.vy = 90; // keep existing descent speed feel
+        g.vx = (landX - g.x) / dur;
       }
     } else if (g.phase === 'carry') {
       g.x += g.vx * dt;
       g.y += g.vy * dt;
       state.terry.x = g.x;
       state.terry.y = g.y + 28;
-      // Drop crab at bottom of screen
-      const landY = state.h - state.terry.r - 8;
+      // Drop crab at BOTTOM CENTER of the screen
+      const landX = dropOffX(state.w);
+      const landY = dropOffY(state.h, state.terry.r);
       if (state.terry.y >= landY) {
+        state.terry.x = landX;
         state.terry.y = landY;
+        g.x = landX;
+        g.y = landY - 28;
         g.phase = 'exit';
         g.vx = 160;
         g.vy = -80;
