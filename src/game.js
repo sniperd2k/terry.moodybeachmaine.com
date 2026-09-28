@@ -16,14 +16,20 @@ export const WET_BAND_FRAC = 0.18;
 export const WAVE_MAX_DEPTH = 0.88;
 /** Low-tide water edge fraction. */
 export const WAVE_MIN_DEPTH = 0.08;
-/** Downward bounce distance when a wave hits Terry (px). */
+/** Downward bounce distance when a wave hits Terry (px) — strong knock toward bottom. */
 export const WAVE_BOUNCE = 110;
 /** Downward impulse velocity on wave hit (px/sec). */
-export const WAVE_BOUNCE_VY = 280;
+export const WAVE_BOUNCE_VY = 420;
 /** Seconds freshly dropped glass cannot be re-collected (touch follow fix). */
 export const DROP_IMMUNE_SEC = 0.45;
-/** Px below waterline for drop/deposit spawn (catchable beach / dry playable zone). */
-export const GLASS_SPAWN_BELOW_WATER = 64;
+/** Minimum px below waterline for catchable beach spawn. */
+export const GLASS_SPAWN_BELOW_WATER = 24;
+/** Fraction of beach depth (water→bottom) used for random glass height sprinkle. */
+export const GLASS_HEIGHT_SPAN = 0.72;
+/** When waves advance, this fraction of existing glass is nudged further down. */
+export const WAVE_GLASS_PUSH_FRAC = 0.2;
+/** Px to push glass further down-beach when carried by a wave. */
+export const WAVE_GLASS_PUSH_PX = 18;
 
 /** @deprecated alias kept for clarity in docs */
 export const GLASS_POINTS = GLASS_CENTS;
@@ -67,23 +73,50 @@ export function isGlassSubmerged(g, waterY) {
   return g.y < waterY;
 }
 
-/** Drop / deposit spawn Y below waterline into beach so Terry can reach it (not submerged). */
+/** Drop spawn Y near crab / beach — catchable, not forced to waterline only. */
 export function glassSpawnYAtWaterline(waterY, h) {
   const y = waterY + GLASS_SPAWN_BELOW_WATER;
   return Math.min((h ?? 1e9) - 24, Math.max(0, y));
 }
 
+/**
+ * Random beach Y across varying depths (not only waterline).
+ * Range: just below waterline → deep beach so glass is catchable at many heights.
+ */
+export function randomGlassBeachY(waterY, h) {
+  const minY = waterY + GLASS_SPAWN_BELOW_WATER;
+  const maxY = Math.min(h - 24, waterY + Math.max(GLASS_SPAWN_BELOW_WATER + 8, h * GLASS_HEIGHT_SPAN));
+  const lo = Math.min(minY, maxY);
+  const hi = Math.max(minY, maxY);
+  return lo + Math.random() * (hi - lo);
+}
+
 export function spawnGlassInWetBand(waterY, w, h, count, nextId) {
   const items = [];
   let id = nextId;
-  const surfaceY = glassSpawnYAtWaterline(waterY, h);
   for (let i = 0; i < count; i++) {
     const x = 24 + Math.random() * (w - 48);
-    // Spawn below waterline in beach zone (± few px jitter; never submerged)
-    const y = surfaceY + Math.random() * 6;
+    const y = randomGlassBeachY(waterY, h);
     items.push(createGlass(x, y, id++));
   }
   return { items, nextId: id };
+}
+
+/**
+ * As waves roll down, nudge ~WAVE_GLASS_PUSH_FRAC of active glass further down-screen.
+ * Returns how many pieces were pushed.
+ */
+export function pushGlassWithWave(state, pushFrac = WAVE_GLASS_PUSH_FRAC, pushPx = WAVE_GLASS_PUSH_PX) {
+  const active = state.glass.filter((g) => !g.collected);
+  if (active.length === 0) return 0;
+  let pushed = 0;
+  for (const g of active) {
+    if (Math.random() < pushFrac) {
+      g.y = Math.min(state.h - 24, g.y + pushPx + Math.random() * pushPx);
+      pushed += 1;
+    }
+  }
+  return pushed;
 }
 
 export function overlaps(ax, ay, ar, bx, by, br) {
@@ -104,8 +137,10 @@ export function createState(w, h) {
   return {
     w,
     h,
-    score: 0, // cents shown on HUD (can drop on wave hit; resets after finale)
-    lifetimeCollected: 0, // cumulative ¢ collected toward finale; resets only when finale starts
+    /** Held / running cents shown on HUD — +1 pickup, −1 wave drop; seagull at ≥ FINALE_CENTS. */
+    currentCents: 0,
+    /** Mirror of currentCents for HUD / legacy callers. */
+    score: 0,
     terry: { x: w / 2, y: h * 0.72, vx: 0, vy: 0, r: TERRY_RADIUS },
     glass: spawn.items,
     nextGlassId: spawn.nextId,
@@ -114,6 +149,7 @@ export function createState(w, h) {
     lastWaterY: waterY,
     prevWaterY: waterY,
     waveHitThisCycle: false,
+    glassPushedThisCycle: false,
     mode: 'play', // play | farting | flying | seagull | returning
     fartTimer: 0,
     fartClouds: [],
@@ -175,41 +211,66 @@ export function setMouseMode(state, x, y) {
   }
 }
 
+
+/** Keep score ↔ currentCents mirrored (held/running total). */
+export function syncHeldCents(state) {
+  if (typeof state.currentCents === 'number' && typeof state.score === 'number') {
+    // Prefer currentCents when they diverge after a partial write
+    const v = state.currentCents;
+    state.score = v;
+    return v;
+  }
+  const v = state.currentCents ?? state.score ?? 0;
+  state.currentCents = v;
+  state.score = v;
+  return v;
+}
+
+export function setHeldCents(state, n) {
+  state.currentCents = n;
+  state.score = n;
+  return n;
+}
+
+/**
+ * Pickup: +1¢ to held/running total (currentCents).
+ * Seagull/finale ONLY when held total reaches ≥ FINALE_CENTS (must have ten cents).
+ */
 export function collectGlass(state, glass) {
+  const held = typeof state.currentCents === 'number' ? state.currentCents : (state.score ?? 0);
   if (glass.collected) {
     return {
       collected: false,
-      score: state.score,
-      lifetimeCollected: state.lifetimeCollected,
+      score: held,
+      currentCents: held,
       finale: false,
     };
   }
   glass.collected = true;
-  const score = state.score + GLASS_CENTS;
-  const lifetimeCollected = state.lifetimeCollected + GLASS_CENTS;
-  const finale = lifetimeCollected >= FINALE_CENTS && state.mode === 'play';
-  return { collected: true, score, lifetimeCollected, finale };
+  const currentCents = held + GLASS_CENTS;
+  const finale = currentCents >= FINALE_CENTS && state.mode === 'play';
+  return { collected: true, score: currentCents, currentCents, finale };
 }
 
 /**
- * Wave knocks Terry down-beach and she drops one 1¢ glass back onto the sand
- * if she has any on the HUD score. Lifetime total is NOT decremented.
+ * Wave knocks Terry to the BOTTOM of the screen (strong boing) and she drops
+ * one 1¢ glass back onto the sand if held score > 0 — running total −1¢.
+ * No seagull on wave hit (even from 9→8); seagull only after pickups reach 10.
  */
 export function applyWaveHit(state) {
-  const waterY = state.lastWaterY;
-  state.terry.y = Math.min(
-    state.h - state.terry.r - 8,
-    Math.max(state.terry.y + WAVE_BOUNCE, waterY + state.terry.r + 28),
-  );
+  // Strong knock to bottom of screen
+  const bottomY = state.h - state.terry.r - 8;
+  state.terry.y = bottomY;
   state.terry.vy = Math.max(state.terry.vy, WAVE_BOUNCE_VY);
 
   // Release pointer/touch follow so mobile drag does not yank crab back onto the drop
   if (state.pointer) state.pointer.active = false;
 
   let dropped = false;
-  if (state.score > 0) {
-    state.score -= GLASS_CENTS;
-    // Spawn below waterline on beach, well beside crab, with brief collect immunity (touch path)
+  const held = typeof state.currentCents === 'number' ? state.currentCents : (state.score ?? 0);
+  if (held > 0) {
+    setHeldCents(state, held - GLASS_CENTS);
+    // Spawn near crab at bottom / beach, well beside crab, with brief collect immunity
     const side = Math.random() < 0.5 ? -1 : 1;
     const gx = Math.max(
       GLASS_RADIUS + 4,
@@ -218,7 +279,13 @@ export function applyWaveHit(state) {
         state.terry.x + side * (state.terry.r + GLASS_RADIUS + 36),
       ),
     );
-    const gy = glassSpawnYAtWaterline(waterY, state.h);
+    const gy = Math.min(
+      state.h - 24,
+      Math.max(
+        glassSpawnYAtWaterline(state.lastWaterY, state.h),
+        state.terry.y - 20,
+      ),
+    );
     state.glass.push(
       createGlass(gx, gy, state.nextGlassId++, {
         immuneUntil: state.time + DROP_IMMUNE_SEC,
@@ -232,8 +299,9 @@ export function applyWaveHit(state) {
 export function beginFart(state) {
   state.mode = 'farting';
   state.fartTimer = 0;
-  // Reset lifetime so the next 10¢ collected can fire finale again
-  state.lifetimeCollected = 0;
+  // Held cents clear when finale starts so the next 10¢ can re-trigger
+  state.currentCents = 0;
+  state.score = 0;
   state.fartClouds = [];
   for (let i = 0; i < 16; i++) {
     state.fartClouds.push({
@@ -249,13 +317,14 @@ export function beginFart(state) {
 }
 
 export function afterFinaleReset(state) {
+  state.currentCents = 0;
   state.score = 0;
-  // lifetimeCollected already cleared when finale began
   state.mode = 'play';
   state.fartTimer = 0;
   state.fartClouds = [];
   state.seagull = null;
   state.waveHitThisCycle = false;
+  state.glassPushedThisCycle = false;
   state.terry.x = state.w / 2;
   state.terry.y = state.h * 0.72;
   state.terry.vx = 0;
@@ -264,10 +333,16 @@ export function afterFinaleReset(state) {
 
 /**
  * Fixed-timestep update. Returns events for audio/UI.
- * events: { clinks: number, waveWhoosh: 'in'|'out'|null, fart: bool, waveHit: bool }
+ * events: { clinks, waveWhoosh, fart, waveHit, seagull }
  */
 export function update(state, dt) {
-  const events = { clinks: 0, waveWhoosh: null, fart: false, waveHit: false };
+  const events = {
+    clinks: 0,
+    waveWhoosh: null,
+    fart: false,
+    waveHit: false,
+    seagull: false,
+  };
   state.time += dt;
   const prevPhase = state.wavePhase;
   state.wavePhase = wavePhase(state.time);
@@ -283,9 +358,17 @@ export function update(state, dt) {
   // Clear per-wave hit latch once the tide is mostly out
   if (state.wavePhase >= 0.85 || state.wavePhase < 0.02) {
     state.waveHitThisCycle = false;
+    state.glassPushedThisCycle = false;
   }
 
-  // Deposit glass when wave finishes receding
+  // As waves roll down (advancing), push ~20% of existing glass further down
+  const advancingWave = state.wavePhase > 0.1 && state.wavePhase < 0.55;
+  if (advancingWave && !state.glassPushedThisCycle && state.mode === 'play') {
+    pushGlassWithWave(state);
+    state.glassPushedThisCycle = true;
+  }
+
+  // Deposit glass when wave finishes receding — varying heights across beach
   if (prevPhase < 0.9 && state.wavePhase >= 0.9) {
     const n = 2 + Math.floor(Math.random() * 3);
     const spawned = spawnGlassInWetBand(waterY, state.w, state.h, n, state.nextGlassId);
@@ -338,7 +421,7 @@ export function update(state, dt) {
     state.fartClouds = state.fartClouds.filter((c) => c.age < c.life);
 
     if (state.terry.y < -50 || state.fartTimer > 3.2) {
-      // Seagull appears to deposit crab back
+      // Seagull appears to deposit crab back at bottom
       state.mode = 'seagull';
       state.fartTimer = 0;
       state.fartClouds = [];
@@ -352,6 +435,7 @@ export function update(state, dt) {
       };
       state.terry.x = -60;
       state.terry.y = 70;
+      events.seagull = true;
     }
     return events;
   }
@@ -370,14 +454,15 @@ export function update(state, dt) {
       if (g.x >= targetX - 8) {
         g.phase = 'carry';
         g.vx = 40;
-        g.vy = 70;
+        g.vy = 90;
       }
     } else if (g.phase === 'carry') {
       g.x += g.vx * dt;
       g.y += g.vy * dt;
       state.terry.x = g.x;
       state.terry.y = g.y + 28;
-      const landY = state.h * 0.72;
+      // Drop crab at bottom of screen
+      const landY = state.h - state.terry.r - 8;
       if (state.terry.y >= landY) {
         state.terry.y = landY;
         g.phase = 'exit';
@@ -428,7 +513,7 @@ export function update(state, dt) {
   state.terry.x = Math.max(state.terry.r, Math.min(state.w - state.terry.r, state.terry.x));
   state.terry.y = Math.max(state.terry.r + 8, Math.min(state.h - state.terry.r - 8, state.terry.y));
 
-  // Wave hit: advancing tide overlaps crab → bounce down + drop 1¢ glass if score > 0
+  // Wave hit: advancing tide overlaps crab → bounce to bottom + drop 1¢ if held > 0
   const advancing = state.wavePhase > 0.02 && state.wavePhase < 0.55;
   if (advancing && waveOverlapsCrab(waterY, state.terry) && !state.waveHitThisCycle) {
     state.waveHitThisCycle = true;
@@ -446,8 +531,8 @@ export function update(state, dt) {
     if (overlaps(state.terry.x, state.terry.y, state.terry.r, g.x, g.y, g.r)) {
       const res = collectGlass(state, g);
       if (res.collected) {
-        state.score = res.score;
-        state.lifetimeCollected = res.lifetimeCollected;
+        state.currentCents = res.currentCents;
+        state.score = res.currentCents;
         events.clinks += 1;
         if (res.finale) {
           events.fart = true;

@@ -9,9 +9,8 @@ test('page loads with canvas, GA, score HUD path', async ({ page }) => {
   const score = await page.evaluate(() => window.__TERRY__.getScore());
   expect(typeof score).toBe('number');
   expect(score).toBeGreaterThanOrEqual(0);
-  const life = await page.evaluate(() => window.__TERRY__.getLifetimeCollected());
-  expect(typeof life).toBe('number');
-  expect(life).toBeGreaterThanOrEqual(0);
+  const cents = await page.evaluate(() => window.__TERRY__.getCurrentCents());
+  expect(cents).toBe(score);
   const body = await page.content();
   expect(body).not.toContain('Canonicus');
   expect(body).not.toContain('VacationRental');
@@ -50,8 +49,7 @@ test('WASD / pointer moves Terry', async ({ page }) => {
   expect(moved).toBeGreaterThan(2);
 });
 
-test('Chrome desktop: AudioContext resumes after user gesture then play', async ({ page }, testInfo) => {
-  // Prefer desktop project; still valid on mobile gesture path
+test('Chrome desktop: AudioContext resumes after user gesture then play', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => window.__TERRY__?.unlockAudio);
 
@@ -60,7 +58,6 @@ test('Chrome desktop: AudioContext resumes after user gesture then play', async 
     expect.arrayContaining(['keydown', 'mousedown', 'pointerdown', 'click', 'touchstart']),
   );
 
-  // Real user gesture (click) then unlock + verify running
   await page.locator('#beach').click({ position: { x: 80, y: 80 } });
   const afterClick = await page.evaluate(async () => {
     await window.__TERRY__.unlockAudio();
@@ -73,7 +70,6 @@ test('Chrome desktop: AudioContext resumes after user gesture then play', async 
   expect(afterClick.state).toBe('running');
   expect(afterClick.unlocked).toBe(true);
 
-  // keydown gesture path (desktop Chrome)
   await page.keyboard.down('w');
   await page.keyboard.up('w');
   const afterKey = await page.evaluate(async () => {
@@ -83,7 +79,6 @@ test('Chrome desktop: AudioContext resumes after user gesture then play', async 
   });
   expect(afterKey).toBe('running');
 
-  // mousedown path
   await page.locator('#beach').dispatchEvent('mousedown');
   const afterMouse = await page.evaluate(async () => {
     await window.__TERRY__.unlockAudio();
@@ -93,72 +88,143 @@ test('Chrome desktop: AudioContext resumes after user gesture then play', async 
   expect(afterMouse).toBe('running');
 });
 
-test('deep waves + lifetime fields on state', async ({ page }) => {
+test('held currentCents model + wave bottom bounce fields', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => window.__TERRY__?.getState());
   const info = await page.evaluate(() => {
     const s = window.__TERRY__.getState();
     return {
+      hasCurrentCents: typeof s.currentCents === 'number',
       hasLifetime: typeof s.lifetimeCollected === 'number',
       hasWaveHitFlag: typeof s.waveHitThisCycle === 'boolean',
+      finale: window.__TERRY__.FINALE_CENTS,
+      pushFrac: window.__TERRY__.WAVE_GLASS_PUSH_FRAC,
       terryYFrac: s.terry.y / s.h,
     };
   });
-  expect(info.hasLifetime).toBe(true);
+  expect(info.hasCurrentCents).toBe(true);
+  expect(info.hasLifetime).toBe(false);
   expect(info.hasWaveHitFlag).toBe(true);
+  expect(info.finale).toBe(10);
+  expect(info.pushFrac).toBeCloseTo(0.2);
   expect(info.terryYFrac).toBeGreaterThan(0.5);
 });
 
-test('wave-hit drop below waterline works with touch/pointer active', async ({ page }) => {
+test('wave-hit: −1¢ score, drop glass, bounce to bottom', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => window.__TERRY__?.getState());
 
-  // Simulate held touch (mobile path) then force a wave hit via state
   const box = await page.locator('#beach').boundingBox();
   expect(box).toBeTruthy();
   await page.touchscreen.tap(box.x + box.width * 0.5, box.y + box.height * 0.7).catch(async () => {
-    // Desktop project may lack touchscreen — fall back to mouse down
     await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.7);
     await page.mouse.down();
   });
 
   const result = await page.evaluate(() => {
     const s = window.__TERRY__.getState();
-    s.score = 5;
-    s.lifetimeCollected = 5;
+    window.__TERRY__.setHeldCents(5);
     s.pointer.active = true;
     s.pointer.x = s.terry.x;
     s.pointer.y = s.terry.y;
     s.lastWaterY = Math.min(s.terry.y - 4, s.h * 0.55);
     const before = s.glass.length;
-    const waterY = s.lastWaterY;
+    const yBefore = s.terry.y;
     const hit = window.__TERRY__.applyWaveHit();
     const dropped = s.glass[s.glass.length - 1];
     return {
       dropped: hit?.dropped === true,
       glassDelta: s.glass.length - before,
       dropY: dropped.y,
-      waterY,
-      spawnBelow: typeof window.__TERRY__.GLASS_SPAWN_BELOW_WATER === 'number'
-        ? window.__TERRY__.GLASS_SPAWN_BELOW_WATER
-        : 64,
       pointerActive: s.pointer.active,
-      score: s.score,
+      score: s.currentCents,
       bounceVy: s.terry.vy,
+      terryY: s.terry.y,
+      bottomY: s.h - s.terry.r - 8,
+      yBefore,
     };
   });
 
   expect(result.dropped).toBe(true);
   expect(result.glassDelta).toBe(1);
-  expect(result.dropY).toBeGreaterThan(result.waterY);
-  expect(result.dropY).toBe(result.waterY + result.spawnBelow);
   expect(result.pointerActive).toBe(false);
   expect(result.score).toBe(4);
   expect(result.bounceVy).toBeGreaterThanOrEqual(250);
+  expect(result.terryY).toBe(result.bottomY);
+  expect(result.terryY).toBeGreaterThan(result.yBefore);
 
   await page.mouse.up().catch(() => {});
 });
 
+test('9¢ wave hit → 8¢ no finale; 10¢ held triggers finale path', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__TERRY__?.getState());
+
+  const nine = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    window.__TERRY__.setHeldCents(9);
+    window.__TERRY__.applyWaveHit();
+    return { cents: s.currentCents, mode: s.mode };
+  });
+  expect(nine.cents).toBe(8);
+  expect(nine.mode).toBe('play');
+
+  const ten = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    window.__TERRY__.setHeldCents(9);
+    s.mode = 'play';
+    s.glass = [];
+    const g = { id: 999, x: s.terry.x, y: s.terry.y, r: 8, hue: 180, collected: false, immuneUntil: 0 };
+    s.glass.push(g);
+    s.waveHitThisCycle = true;
+    // force one update tick via overlapping collect by simulating collect through state
+    s.terry.x = g.x;
+    s.terry.y = g.y;
+    return { before: s.currentCents, glassId: g.id };
+  });
+  expect(ten.before).toBe(9);
+
+  // Advance enough frames for collect+finale
+  await page.waitForTimeout(200);
+  const after = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    // Manually drive collect if frame loop hasn't: ensure glass at crab
+    const g = s.glass.find((x) => x.id === 999);
+    if (g && !g.collected && s.mode === 'play') {
+      g.x = s.terry.x;
+      g.y = s.terry.y;
+    }
+    return { mode: s.mode, cents: s.currentCents };
+  });
+  // Wait for requestAnimationFrame loop to collect
+  await page.waitForFunction(() => {
+    const s = window.__TERRY__.getState();
+    const g = s.glass.find((x) => x.id === 999);
+    if (g && !g.collected && s.mode === 'play') {
+      g.x = s.terry.x;
+      g.y = s.terry.y;
+      g.immuneUntil = 0;
+    }
+    return s.mode === 'farting' || s.mode === 'flying' || s.mode === 'seagull' || s.currentCents >= 10;
+  }, { timeout: 3000 });
+  const finale = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    return { mode: s.mode, cents: s.currentCents };
+  });
+  expect(['farting', 'flying', 'seagull']).toContain(finale.mode);
+});
+
+test('glass height variance across beach depths', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__TERRY__?.getState());
+  const span = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    const ys = s.glass.filter((g) => !g.collected).map((g) => g.y);
+    return { min: Math.min(...ys), max: Math.max(...ys), n: ys.length, h: s.h };
+  });
+  expect(span.n).toBeGreaterThan(0);
+  expect(span.max - span.min).toBeGreaterThan(20);
+});
 
 test('arrow keys move Terry; keyboard then mouse mode switch', async ({ page }) => {
   await page.goto('/');
@@ -182,7 +248,6 @@ test('arrow keys move Terry; keyboard then mouse mode switch', async ({ page }) 
   expect(afterArrow.pointerActive).toBe(false);
   expect(afterArrow.x - before.x).toBeGreaterThan(2);
 
-  // Stale pointer target while still in keyboard mode must not yank crab
   await page.evaluate(() => {
     const s = window.__TERRY__.getState();
     s.pointer.active = true;
@@ -197,7 +262,6 @@ test('arrow keys move Terry; keyboard then mouse mode switch', async ({ page }) 
   expect(mid.inputMode).toBe('keyboard');
   expect(Math.hypot(mid.x - afterArrow.x, mid.y - afterArrow.y)).toBeLessThan(30);
 
-  // Mouse move resumes follow
   const box = await page.locator('#beach').boundingBox();
   await page.mouse.move(box.x + box.width * 0.85, box.y + box.height * 0.7);
   await page.waitForTimeout(450);

@@ -1,4 +1,4 @@
-/** Web Audio: 5 distinct glass clinks, wave whoosh, soft fart.
+/** Web Audio: glass clinks, wave whoosh, soft fart, cartoon boing, seagull caw.
  * Autoplay policy: AudioContext stays suspended until a user gesture.
  * Call unlockAudio() from pointer/key/mouse/click handlers before sounds will play.
  * Desktop Chrome requires resume() inside a real gesture (keydown/mousedown/click/pointerdown),
@@ -152,4 +152,25 @@ export function playFart() {
   tone(110, 0.35, 'sawtooth', 0.22, 0, 45);
   tone(70, 0.45, 'square', 0.12, 0.05, 30);
   noiseBurst(0.4, 0.1, 0.08, 80);
+}
+
+/** Short cartoon boing — wave knock to bottom (original synth, no samples). */
+export function playBoing() {
+  const c = canPlay();
+  if (!c) return;
+  // Springy down-then-up pitch swoop
+  tone(320, 0.12, 'sine', 0.22, 0, 140);
+  tone(180, 0.1, 'triangle', 0.14, 0.04, 380);
+  tone(520, 0.08, 'sine', 0.1, 0.09, 260);
+}
+
+/** Ocean seagull caw/squawk — original synth (no copyrighted samples). */
+export function playSeagull() {
+  const c = canPlay();
+  if (!c) return;
+  // Nasal squawk: noisy band + pitch dive
+  tone(880, 0.12, 'sawtooth', 0.1, 0, 420);
+  tone(720, 0.18, 'square', 0.08, 0.05, 280);
+  noiseBurst(0.22, 0.09, 0.02, 900);
+  tone(1100, 0.08, 'sawtooth', 0.07, 0.16, 500);
 }

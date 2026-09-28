@@ -8,8 +8,10 @@ import {
   applyWaveHit,
   setKeyboardMode,
   setMouseMode,
+  setHeldCents,
   GLASS_SPAWN_BELOW_WATER,
   FINALE_CENTS,
+  WAVE_GLASS_PUSH_FRAC,
 } from './game.js';
 import {
   drawBeach,
@@ -25,6 +27,8 @@ import {
   playClink,
   playWaveWhoosh,
   playFart,
+  playBoing,
+  playSeagull,
   isAudioUnlocked,
   getAudioState,
   AUDIO_UNLOCK_EVENTS,
@@ -91,7 +95,6 @@ canvas.addEventListener('click', () => { unlockAudio(); });
 canvas.addEventListener('pointermove', (e) => {
   if (e.buttons || (e.pointerType === 'touch' && state?.pointer.active)) onPointer(e, true);
   else if (e.pointerType === 'mouse') {
-    // soft follow while mouse is over canvas — resumes mouse mode after keyboard
     if (!state) return;
     unlockAudio();
     const p = canvasPos(e);
@@ -128,8 +131,6 @@ window.addEventListener('keyup', (e) => {
   if (k in state.keys) state.keys[k] = false;
 });
 
-// Capture first gesture anywhere — desktop Chrome needs keydown/mousedown/click,
-// not touchstart-only. Resume AudioContext inside the gesture stack before any play().
 function unlockOnce() {
   unlockAudio();
 }
@@ -147,7 +148,7 @@ function render() {
   drawBeach(ctx, w, h, waterY, state.wavePhase);
 
   for (const g of activeGlass(state)) {
-    if (isGlassSubmerged(g, waterY)) continue; // invisible under waterline
+    if (isGlassSubmerged(g, waterY)) continue;
     drawSeaGlass(ctx, g);
   }
 
@@ -158,13 +159,12 @@ function render() {
   if (state.terry.vx < -5) facing = -1;
   else if (state.terry.vx > 5) facing = 1;
 
-  // Only hide crab if far off-screen during pure fly-away (seagull mode still shows)
   if (state.terry.y > -80) {
     drawCrab(ctx, state.terry.x, state.terry.y, facing);
     drawTerryLabel(ctx, state.terry.x, state.terry.y - 22);
   }
 
-  drawHUD(ctx, state.score, w);
+  drawHUD(ctx, state.currentCents, w);
 }
 
 function frame(now) {
@@ -176,6 +176,8 @@ function frame(now) {
     if (ev.clinks) for (let i = 0; i < ev.clinks; i++) playClink();
     if (ev.waveWhoosh) playWaveWhoosh(ev.waveWhoosh);
     if (ev.fart) playFart();
+    if (ev.waveHit) playBoing();
+    if (ev.seagull) playSeagull();
     accum -= FIXED_DT;
   }
   render();
@@ -185,11 +187,11 @@ function frame(now) {
 resize();
 requestAnimationFrame(frame);
 
-// Expose for e2e / debugging
 window.__TERRY__ = {
   getState: () => state,
-  getScore: () => state?.score ?? 0,
-  getLifetimeCollected: () => state?.lifetimeCollected ?? 0,
+  getScore: () => state?.currentCents ?? 0,
+  getCurrentCents: () => state?.currentCents ?? 0,
+  setHeldCents: (n) => (state ? setHeldCents(state, n) : null),
   unlockAudio,
   isAudioUnlocked,
   getAudioState,
@@ -197,4 +199,5 @@ window.__TERRY__ = {
   applyWaveHit: () => (state ? applyWaveHit(state) : null),
   GLASS_SPAWN_BELOW_WATER,
   FINALE_CENTS,
+  WAVE_GLASS_PUSH_FRAC,
 };
