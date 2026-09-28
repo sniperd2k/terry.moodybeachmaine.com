@@ -66,6 +66,16 @@ export const WAVE_BOUNCE_VY = 420;
 export const DROP_IMMUNE_SEC = 0.45;
 /** Px above canvas bottom for playable crab rest (wave bounce + seagull drop-off). */
 export const BOTTOM_PLAYABLE_MARGIN = 8;
+/** Seagull caws on return/pickup interact: 2–3 spaced plays. */
+export const SEAGULL_CAW_COUNT = 3;
+/** Seconds between spaced seagull caws. */
+export const SEAGULL_CAW_SPACING = 0.28;
+/** Pixel seagull poop radius (falling + ground stain). */
+export const POOP_RADIUS = 5;
+/** Fall speed for drop-off poop (px/sec). */
+export const POOP_FALL_VY = 160;
+/** Minimum horizontal miss offset from Terry center (near-miss beside her). */
+export const POOP_MISS_OFFSET = 32;
 /** Seagull drop-off X: canvas horizontal center. */
 export function dropOffX(w) {
   return w / 2;
@@ -73,6 +83,45 @@ export function dropOffX(w) {
 /** Seagull drop-off / bottom-playable Y: h - terryR - BOTTOM_PLAYABLE_MARGIN. */
 export function dropOffY(h, terryR) {
   return h - terryR - BOTTOM_PLAYABLE_MARGIN;
+}
+
+/**
+ * Near-miss poop X beside Terry (not centered on her).
+ * side: -1 left / +1 right; default random.
+ */
+export function poopMissX(terryX, w, side = null) {
+  const s = side == null ? (Math.random() < 0.5 ? -1 : 1) : (side < 0 ? -1 : 1);
+  const x = terryX + s * POOP_MISS_OFFSET;
+  return Math.max(POOP_RADIUS + 2, Math.min(w - POOP_RADIUS - 2, x));
+}
+
+/** Spawn a falling near-miss poop at drop-off (offset from Terry). */
+export function spawnDropPoop(state, side = null) {
+  const landX = dropOffX(state.w);
+  const landY = dropOffY(state.h, state.terry.r);
+  const x = poopMissX(landX, state.w, side);
+  const y = Math.max(POOP_RADIUS, (state.seagull?.y ?? landY - 28));
+  const poop = {
+    id: state.nextPoopId++,
+    x,
+    y,
+    r: POOP_RADIUS,
+    vy: POOP_FALL_VY,
+    /** falling | ground */
+    phase: 'falling',
+  };
+  state.poops.push(poop);
+  return poop;
+}
+
+/** True when water edge covers a ground stain (wave wash). */
+export function waterCoversPoop(waterY, poop) {
+  return waterY >= poop.y - poop.r;
+}
+
+/** Clear poop stuck on Terry (seagull pickup/carry). */
+export function clearTerryPoopStuck(state) {
+  state.poopStuck = false;
 }
 /** Minimum px below waterline for catchable beach spawn. */
 export const GLASS_SPAWN_BELOW_WATER = 24;
@@ -205,7 +254,12 @@ export function createState(w, h) {
     mode: 'play', // play | farting | flying | seagull | returning
     fartTimer: 0,
     fartClouds: [],
-    seagull: null, // { x, y, vx, vy, phase: 'enter'|'carry'|'exit' }
+    seagull: null, // { x, y, vx, vy, phase: 'enter'|'carry'|'exit', cawsPlayed, nextCawAt }
+    /** Falling / ground poop stains (washable by wave). */
+    poops: [],
+    nextPoopId: 1,
+    /** Poop stuck on crab until next seagull pickup/carry. */
+    poopStuck: false,
     keys: {
       w: false,
       a: false,
@@ -381,6 +435,15 @@ export function afterFinaleReset(state) {
   state.terry.y = state.h * 0.72;
   state.terry.vx = 0;
   state.terry.vy = 0;
+  // Ground poops stay (washable); stuck cleared on next pickup, not here
+}
+
+/** Finish seagull exit without yanking Terry — control already unlocked on drop. */
+export function finishSeagullExit(state) {
+  state.seagull = null;
+  state.fartTimer = 0;
+  state.fartClouds = [];
+  if (state.mode === 'seagull') state.mode = 'play';
 }
 
 /**
@@ -394,6 +457,10 @@ export function update(state, dt) {
     fart: false,
     waveHit: false,
     seagull: false,
+    seagullCaw: false,
+    poopHit: false,
+    poopLand: false,
+    poopWash: false,
   };
   state.time += dt;
   const prevPhase = state.wavePhase;
@@ -477,6 +544,8 @@ export function update(state, dt) {
       state.mode = 'seagull';
       state.fartTimer = 0;
       state.fartClouds = [];
+      // Pickup clears any poop stuck on Terry from a prior near-hit
+      clearTerryPoopStuck(state);
       state.seagull = {
         x: -40,
         y: 40,
@@ -484,10 +553,16 @@ export function update(state, dt) {
         vy: 0,
         phase: 'enter',
         bob: 0,
+        cawsPlayed: 0,
+        nextCawAt: 0,
       };
       state.terry.x = -60;
       state.terry.y = 70;
       events.seagull = true;
+      // First of 2–3 spaced caws on return/pickup interact
+      events.seagullCaw = true;
+      state.seagull.cawsPlayed = 1;
+      state.seagull.nextCawAt = SEAGULL_CAW_SPACING;
     }
     return events;
   }
@@ -496,6 +571,16 @@ export function update(state, dt) {
     const g = state.seagull;
     state.fartTimer += dt;
     g.bob += dt * 6;
+    if (typeof g.cawsPlayed !== 'number') {
+      g.cawsPlayed = 0;
+      g.nextCawAt = 0;
+    }
+    // Spaced multi-caw (2–3) while returning / interacting with Terry
+    if (g.cawsPlayed < SEAGULL_CAW_COUNT && state.fartTimer >= g.nextCawAt) {
+      events.seagullCaw = true;
+      g.cawsPlayed += 1;
+      g.nextCawAt = g.cawsPlayed * SEAGULL_CAW_SPACING;
+    }
     if (g.phase === 'enter') {
       g.x += g.vx * dt;
       g.y = 40 + Math.sin(g.bob) * 8;
@@ -529,15 +614,72 @@ export function update(state, dt) {
         g.phase = 'exit';
         g.vx = 160;
         g.vy = -80;
+        // Near-miss poop (offset beside Terry) then unlock control immediately
+        spawnDropPoop(state);
+        state.mode = 'play';
+        state.terry.vx = 0;
+        state.terry.vy = 0;
+        // Fall through to play movement so she can move while bird exits
       }
     } else if (g.phase === 'exit') {
+      // Should not linger in seagull+exit — unlock sets mode play — but keep safe
       g.x += g.vx * dt;
       g.y += g.vy * dt;
       if (g.x > state.w + 60 || g.y < -60) {
-        afterFinaleReset(state);
+        finishSeagullExit(state);
+      }
+      return events;
+    }
+    // If still carrying/entering, no player control yet
+    if (state.mode === 'seagull') return events;
+    // else dropped → continue into play movement below
+  }
+
+  // Seagull exit flight continues while Terry is already free in play mode
+  if (state.mode === 'play' && state.seagull && state.seagull.phase === 'exit') {
+    const g = state.seagull;
+    g.bob = (g.bob || 0) + dt * 6;
+    g.x += g.vx * dt;
+    g.y += g.vy * dt;
+    if (g.x > state.w + 60 || g.y < -60) {
+      finishSeagullExit(state);
+    }
+  }
+
+  // Falling / ground poops: hit Terry → stick; land → stain; wave covers → wash
+  if (state.poops && state.poops.length) {
+    const landY = dropOffY(state.h, state.terry.r);
+    const nextPoops = [];
+    for (const p of state.poops) {
+      if (p.phase === 'falling') {
+        p.y += p.vy * dt;
+        if (
+          !state.poopStuck &&
+          overlaps(state.terry.x, state.terry.y, state.terry.r, p.x, p.y, p.r)
+        ) {
+          state.poopStuck = true;
+          events.poopHit = true;
+          continue; // removed from ground list — stuck on crab
+        }
+        const groundY = Math.min(landY + 4, state.h - p.r - 2);
+        if (p.y >= groundY) {
+          p.y = groundY;
+          p.phase = 'ground';
+          p.vy = 0;
+          events.poopLand = true;
+        }
+        nextPoops.push(p);
+      } else if (p.phase === 'ground') {
+        if (waterCoversPoop(waterY, p)) {
+          events.poopWash = true;
+          continue; // washed away
+        }
+        nextPoops.push(p);
+      } else {
+        nextPoops.push(p);
       }
     }
-    return events;
+    state.poops = nextPoops;
   }
 
   // --- play mode movement ---
@@ -618,6 +760,10 @@ export function advanceWallTime(state, wallDt, speed = getSpeedMultiplier(), max
     fart: false,
     waveHit: false,
     seagull: false,
+    seagullCaw: 0,
+    poopHit: false,
+    poopLand: false,
+    poopWash: false,
   };
   let budget = Math.max(0, wallDt) * (speed > 0 ? speed : 1);
   let steps = 0;
@@ -628,6 +774,10 @@ export function advanceWallTime(state, wallDt, speed = getSpeedMultiplier(), max
     if (ev.fart) events.fart = true;
     if (ev.waveHit) events.waveHit = true;
     if (ev.seagull) events.seagull = true;
+    if (ev.seagullCaw) events.seagullCaw += 1;
+    if (ev.poopHit) events.poopHit = true;
+    if (ev.poopLand) events.poopLand = true;
+    if (ev.poopWash) events.poopWash = true;
     budget -= FIXED_DT;
     steps += 1;
   }

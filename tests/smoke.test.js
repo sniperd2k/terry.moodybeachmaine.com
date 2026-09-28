@@ -43,6 +43,15 @@ import {
   dropOffX,
   dropOffY,
   BOTTOM_PLAYABLE_MARGIN,
+  SEAGULL_CAW_COUNT,
+  SEAGULL_CAW_SPACING,
+  POOP_MISS_OFFSET,
+  POOP_RADIUS,
+  poopMissX,
+  spawnDropPoop,
+  waterCoversPoop,
+  clearTerryPoopStuck,
+  finishSeagullExit,
 } from '../src/game.js';
 import { AUDIO_UNLOCK_EVENTS } from '../src/audio.js';
 
@@ -413,10 +422,12 @@ describe('deep waves + wave hit drop + bottom bounce', () => {
     expect(state.currentCents).toBe(scoreBefore); // still immune
   });
 
-  it('main wires waveHit → playBoing and seagull → playSeagull', () => {
+  it('main wires waveHit → playBoing and seagullCaw → playSeagull (multi-caw)', () => {
     const main = readFileSync(join(root, 'src/main.js'), 'utf8');
     expect(main).toMatch(/ev\.waveHit.*playBoing|if \(ev\.waveHit\) playBoing/);
-    expect(main).toMatch(/ev\.seagull.*playSeagull|if \(ev\.seagull\) playSeagull/);
+    expect(main).toMatch(/ev\.seagullCaw.*playSeagull|if \(ev\.seagullCaw\) playSeagull/);
+    expect(main).toContain('drawPoop');
+    expect(main).toContain('drawPoopStuckOnCrab');
     expect(main).toContain('drawHUD(ctx, state.currentCents');
   });
 });
@@ -578,6 +589,195 @@ describe('seagull return drop-off = bottom center', () => {
   });
 });
 
+
+describe('seagull multi-caw + poop miss + unlock-on-drop + wash/stick', () => {
+  it('caw constants: 2–3 spaced plays', () => {
+    expect(SEAGULL_CAW_COUNT).toBeGreaterThanOrEqual(2);
+    expect(SEAGULL_CAW_COUNT).toBeLessThanOrEqual(3);
+    expect(SEAGULL_CAW_SPACING).toBeGreaterThan(0.1);
+    expect(SEAGULL_CAW_SPACING).toBeLessThan(1);
+  });
+
+  it('multi-caw: 2–3 spaced seagullCaw events on return/pickup', () => {
+    const state = createState(400, 600);
+    state.mode = 'flying';
+    state.fartTimer = 3.3;
+    state.terry.y = -60;
+    state.poopStuck = true; // should clear on pickup
+    const ev0 = update(state, FIXED_DT);
+    expect(ev0.seagull).toBe(true);
+    expect(ev0.seagullCaw).toBe(true);
+    expect(state.mode).toBe('seagull');
+    expect(state.poopStuck).toBe(false); // cleared on pickup/carry start
+
+    let caws = 1; // first already fired
+    const times = [0];
+    for (let i = 0; i < 200; i++) {
+      const ev = update(state, FIXED_DT);
+      if (ev.seagullCaw) {
+        caws += 1;
+        times.push(state.fartTimer);
+      }
+      if (caws >= SEAGULL_CAW_COUNT) break;
+    }
+    expect(caws).toBe(SEAGULL_CAW_COUNT);
+    expect(caws).toBeGreaterThanOrEqual(2);
+    expect(caws).toBeLessThanOrEqual(3);
+    // Spaced: gaps roughly SEAGULL_CAW_SPACING
+    if (times.length >= 3) {
+      expect(times[1]).toBeGreaterThanOrEqual(SEAGULL_CAW_SPACING - FIXED_DT);
+      expect(times[2] - times[1]).toBeGreaterThanOrEqual(SEAGULL_CAW_SPACING - FIXED_DT * 2);
+    }
+  });
+
+  it('poopMissX is offset from Terry (not centered)', () => {
+    expect(POOP_MISS_OFFSET).toBeGreaterThanOrEqual(20);
+    const left = poopMissX(200, 400, -1);
+    const right = poopMissX(200, 400, 1);
+    expect(left).toBe(200 - POOP_MISS_OFFSET);
+    expect(right).toBe(200 + POOP_MISS_OFFSET);
+    expect(left).not.toBe(200);
+    expect(right).not.toBe(200);
+  });
+
+  it('drop-off spawns near-miss poop (offset, not on Terry) and unlocks control', () => {
+    const state = createState(400, 600);
+    state.mode = 'seagull';
+    state.fartTimer = 0;
+    state.seagull = {
+      x: dropOffX(400) - 4,
+      y: dropOffY(600, state.terry.r) - 40,
+      vx: 0,
+      vy: 90,
+      phase: 'carry',
+      bob: 0,
+      cawsPlayed: SEAGULL_CAW_COUNT,
+      nextCawAt: 99,
+    };
+    state.terry.x = state.seagull.x;
+    state.terry.y = state.seagull.y + 28;
+    // Step until drop
+    let dropped = false;
+    for (let i = 0; i < 400; i++) {
+      update(state, FIXED_DT);
+      if (state.seagull && state.seagull.phase === 'exit') {
+        dropped = true;
+        break;
+      }
+    }
+    expect(dropped).toBe(true);
+    expect(state.mode).toBe('play'); // unlocked immediately
+    expect(state.seagull).not.toBeNull();
+    expect(state.seagull.phase).toBe('exit');
+    expect(state.poops.length).toBeGreaterThanOrEqual(1);
+    const p = state.poops[0];
+    expect(Math.abs(p.x - state.terry.x)).toBeGreaterThanOrEqual(POOP_MISS_OFFSET - 1);
+    expect(p.x).not.toBe(state.terry.x);
+
+    // Control unlocked: can move while bird still exiting
+    const x0 = state.terry.x;
+    state.keys.d = true;
+    state.waveHitThisCycle = true;
+    state.glass = [];
+    for (let i = 0; i < 20; i++) update(state, FIXED_DT);
+    expect(state.mode).toBe('play');
+    expect(state.seagull).not.toBeNull(); // still exiting
+    expect(state.terry.x).toBeGreaterThan(x0 + 5);
+  });
+
+  it('seagull flies off screen after drop (exit flight)', () => {
+    const state = createState(400, 600);
+    state.mode = 'play';
+    state.seagull = {
+      x: 390,
+      y: 20,
+      vx: 160,
+      vy: -80,
+      phase: 'exit',
+      bob: 0,
+      cawsPlayed: 3,
+      nextCawAt: 99,
+    };
+    state.terry.x = 200;
+    state.terry.y = dropOffY(600, state.terry.r);
+    for (let i = 0; i < 120; i++) update(state, FIXED_DT);
+    expect(state.seagull).toBeNull();
+    expect(state.mode).toBe('play');
+    // Terry not yanked by finishSeagullExit
+    expect(state.terry.x).toBe(200);
+  });
+
+  it('ground poop stain washes away when wave/water covers it', () => {
+    expect(waterCoversPoop(100, { y: 90, r: 5 })).toBe(true);
+    expect(waterCoversPoop(50, { y: 90, r: 5 })).toBe(false);
+
+    const state = createState(400, 600);
+    state.waveHitThisCycle = true;
+    state.glass = [];
+    state.poops = [
+      { id: 1, x: 200, y: 80, r: POOP_RADIUS, vy: 0, phase: 'ground' },
+    ];
+    // Drive tide toward peak (phase ~0.5 → deep water covers y=80)
+    state.time = 4; // WAVE_PERIOD=8 → phase 0.5
+    let washed = false;
+    for (let i = 0; i < 30; i++) {
+      const ev = update(state, FIXED_DT);
+      if (ev.poopWash) washed = true;
+      if (state.poops.length === 0) break;
+    }
+    expect(washed).toBe(true);
+    expect(state.poops.length).toBe(0);
+  });
+
+  it('falling poop that hits Terry sticks until next seagull pickup/carry', () => {
+    const state = createState(400, 600);
+    state.waveHitThisCycle = true;
+    state.glass = [];
+    state.poopStuck = false;
+    state.poops = [
+      {
+        id: 1,
+        x: state.terry.x,
+        y: state.terry.y - 40,
+        r: POOP_RADIUS,
+        vy: 200,
+        phase: 'falling',
+      },
+    ];
+    let hit = false;
+    for (let i = 0; i < 60; i++) {
+      const ev = update(state, FIXED_DT);
+      if (ev.poopHit) hit = true;
+      if (state.poopStuck) break;
+    }
+    expect(hit).toBe(true);
+    expect(state.poopStuck).toBe(true);
+    expect(state.poops.every((p) => p.phase !== 'falling' || p.x !== state.terry.x)).toBe(true);
+    // No falling poop left on her position — stuck flag holds the visual
+    expect(state.poops.filter((p) => p.phase === 'falling').length).toBe(0);
+
+    // Stays stuck across play frames
+    for (let i = 0; i < 10; i++) update(state, FIXED_DT);
+    expect(state.poopStuck).toBe(true);
+
+    // Next seagull pickup clears it
+    state.mode = 'flying';
+    state.fartTimer = 3.3;
+    state.terry.y = -60;
+    update(state, FIXED_DT);
+    expect(state.mode).toBe('seagull');
+    expect(state.poopStuck).toBe(false);
+  });
+
+  it('draw.js exports poop sprites; audio still has playSeagull', () => {
+    const draw = readFileSync(join(root, 'src/draw.js'), 'utf8');
+    expect(draw).toContain('drawPoop');
+    expect(draw).toContain('drawPoopStuckOnCrab');
+    const audio = readFileSync(join(root, 'src/audio.js'), 'utf8');
+    expect(audio).toContain('playSeagull');
+  });
+});
+
 describe('100x speed mode (logic/scoring verification)', () => {
   afterEach(() => {
     setSpeedMultiplier(1);
@@ -736,8 +936,8 @@ describe('100x speed mode (logic/scoring verification)', () => {
         sawReset = true;
         break;
       }
-      // Keep remaining glass under crab until all collected / finale
-      if (state.mode === 'play') {
+      // Keep remaining glass under crab until finale — not during unlocked seagull exit
+      if (state.mode === 'play' && !sawSeagull && !state.seagull) {
         for (const g of state.glass) {
           if (!g.collected) {
             g.x = state.terry.x;

@@ -128,6 +128,45 @@ export function drawSeagull(ctx, x, y) {
   }
 }
 
+/** Tasteful 8-bit poop (silly, not gross) — falling blob or ground stain. */
+export function drawPoop(ctx, x, y, opts = {}) {
+  const s = opts.scale ?? 2;
+  const stain = !!opts.stain;
+  // Tiny pixel splat: warm brown + lighter highlight
+  const blob = stain
+    ? [
+        '..BB..',
+        '.BmmB.',
+        'BmmmmB',
+        '.BmmB.',
+        '..BB..',
+      ]
+    : [
+        '..BB.',
+        '.BmB.',
+        'BmmmB',
+        '.BBB.',
+      ];
+  const pal = { B: '#6b3e1f', m: '#8a5a2b', '.': null };
+  const cols = blob[0].length;
+  const rows = blob.length;
+  const ox = Math.round(x - (cols * s) / 2);
+  const oy = Math.round(y - (rows * s) / 2);
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const ch = blob[row][col];
+      if (!pal[ch]) continue;
+      ctx.fillStyle = pal[ch];
+      ctx.fillRect(ox + col * s, oy + row * s, s, s);
+    }
+  }
+}
+
+/** Tiny stuck poop on crab shell (cleared on next seagull pickup). */
+export function drawPoopStuckOnCrab(ctx, terryX, terryY) {
+  drawPoop(ctx, terryX + 6, terryY - 8, { scale: 2, stain: false });
+}
+
 export function drawBeach(ctx, w, h, waterY, phase) {
   // Sky strip above water
   const skyH = Math.max(0, waterY * 0.35);

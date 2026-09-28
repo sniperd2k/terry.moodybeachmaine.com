@@ -413,3 +413,144 @@ test('seagull drop-off lands Terry at bottom center', async ({ page }) => {
   expect(drop.y).toBeLessThan(drop.h);
   expect(drop.y).toBeGreaterThan(drop.h * 0.5);
 });
+
+
+test('seagull multi-caw + miss poop + unlock during exit + wash/stick', async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 600 });
+  await page.goto('/?speed=100');
+  await page.waitForFunction(() => window.__TERRY__?.getState);
+
+  // Inject seagull enter → watch multi-caw via monkeypatch play count on __TERRY__
+  const cawCount = await page.evaluate(async () => {
+    const s = window.__TERRY__.getState();
+    window.__TERRY__.setSpeedMultiplier(100);
+    s.mode = 'flying';
+    s.fartTimer = 3.3;
+    s.terry.y = -60;
+    s.poopStuck = true;
+    // Count seagullCaw by stepping through exposed update is hard; observe state fields
+    // Drive via RAF at 100x — wait for seagull mode then read cawsPlayed
+    return true;
+  });
+  expect(cawCount).toBe(true);
+
+  await page.waitForFunction(() => {
+    const s = window.__TERRY__.getState();
+    return s.mode === 'seagull' || (s.seagull && s.seagull.cawsPlayed >= 1);
+  }, { timeout: 5000 });
+
+  // Let caws accumulate during enter
+  await page.waitForFunction(() => {
+    const s = window.__TERRY__.getState();
+    return s.seagull && s.seagull.cawsPlayed >= 2;
+  }, { timeout: 5000 });
+
+  const mid = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    return {
+      caws: s.seagull?.cawsPlayed ?? 0,
+      stuckCleared: s.poopStuck === false,
+      mode: s.mode,
+    };
+  });
+  expect(mid.caws).toBeGreaterThanOrEqual(2);
+  expect(mid.caws).toBeLessThanOrEqual(3);
+  expect(mid.stuckCleared).toBe(true);
+
+  // Jump to near-drop carry so we don't wait full flight at flaky timing
+  await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    const landX = s.w / 2;
+    const landY = s.h - s.terry.r - 8;
+    s.mode = 'seagull';
+    s.seagull = {
+      x: landX,
+      y: landY - 40,
+      vx: 0,
+      vy: 90,
+      phase: 'carry',
+      bob: 0,
+      cawsPlayed: 3,
+      nextCawAt: 99,
+    };
+    s.terry.x = landX;
+    s.terry.y = landY - 12;
+    s.poops = [];
+  });
+
+  await page.waitForFunction(() => {
+    const s = window.__TERRY__.getState();
+    return s.seagull && s.seagull.phase === 'exit' && s.mode === 'play';
+  }, { timeout: 5000 });
+
+  const drop = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    const p = s.poops[0];
+    return {
+      mode: s.mode,
+      phase: s.seagull?.phase,
+      terryX: s.terry.x,
+      expectX: s.w / 2,
+      poopX: p?.x,
+      poopPhase: p?.phase,
+      offset: p ? Math.abs(p.x - s.terry.x) : 0,
+    };
+  });
+  expect(drop.mode).toBe('play');
+  expect(drop.phase).toBe('exit');
+  expect(Math.abs(drop.terryX - drop.expectX)).toBeLessThan(1);
+  expect(drop.poopX).toBeDefined();
+  expect(drop.offset).toBeGreaterThanOrEqual(20);
+  expect(drop.poopX).not.toBe(drop.terryX);
+
+  // Move while seagull still exiting
+  const before = await page.evaluate(() => window.__TERRY__.getState().terry.x);
+  await page.keyboard.down('d');
+  await page.waitForTimeout(200);
+  await page.keyboard.up('d');
+  const afterMove = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    return { x: s.terry.x, seagull: !!s.seagull, mode: s.mode };
+  });
+  expect(afterMove.mode).toBe('play');
+  expect(afterMove.x).toBeGreaterThan(before + 2);
+
+  // Stick-on-hit: place falling poop on Terry
+  await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    s.poopStuck = false;
+    s.poops = [{
+      id: 99,
+      x: s.terry.x,
+      y: s.terry.y - 30,
+      r: 5,
+      vy: 220,
+      phase: 'falling',
+    }];
+  });
+  await page.waitForFunction(() => window.__TERRY__.getState().poopStuck === true, { timeout: 3000 });
+
+  // Wash: ground stain + deep water
+  await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    s.poops = [{ id: 7, x: 200, y: 60, r: 5, vy: 0, phase: 'ground' }];
+    s.time = 4; // near peak tide
+  });
+  await page.waitForFunction(() => {
+    const s = window.__TERRY__.getState();
+    return s.poops.length === 0;
+  }, { timeout: 3000 });
+
+  // Stuck clears on next seagull pickup
+  expect(await page.evaluate(() => window.__TERRY__.getState().poopStuck)).toBe(true);
+  await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    s.mode = 'flying';
+    s.fartTimer = 3.3;
+    s.terry.y = -60;
+  });
+  await page.waitForFunction(() => {
+    const s = window.__TERRY__.getState();
+    return s.mode === 'seagull' && s.poopStuck === false;
+  }, { timeout: 3000 });
+});

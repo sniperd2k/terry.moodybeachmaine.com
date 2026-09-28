@@ -24,6 +24,8 @@ import {
   drawSeaGlass,
   drawFartCloud,
   drawSeagull,
+  drawPoop,
+  drawPoopStuckOnCrab,
   drawHUD,
 } from './draw.js';
 import {
@@ -158,6 +160,10 @@ function render() {
 
   for (const c of state.fartClouds) drawFartCloud(ctx, c);
 
+  for (const p of state.poops || []) {
+    drawPoop(ctx, p.x, p.y, { stain: p.phase === 'ground' });
+  }
+
   if (state.seagull) drawSeagull(ctx, state.seagull.x, state.seagull.y);
 
   if (state.terry.vx < -5) facing = -1;
@@ -165,6 +171,7 @@ function render() {
 
   if (state.terry.y > -80) {
     drawCrab(ctx, state.terry.x, state.terry.y, facing);
+    if (state.poopStuck) drawPoopStuckOnCrab(ctx, state.terry.x, state.terry.y);
     drawTerryLabel(ctx, state.terry.x, state.terry.y - 22);
   }
 
@@ -184,7 +191,8 @@ function frame(now) {
     if (ev.waveWhoosh) playWaveWhoosh(ev.waveWhoosh);
     if (ev.fart) playFart();
     if (ev.waveHit) playBoing();
-    if (ev.seagull) playSeagull();
+    // Multi-caw: 2–3 spaced plays via seagullCaw events (not a single shot)
+    if (ev.seagullCaw) playSeagull();
     accum -= FIXED_DT;
     steps += 1;
   }
