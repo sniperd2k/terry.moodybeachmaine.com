@@ -10,6 +10,48 @@ export const GLASS_RADIUS = 8;
 export const TERRY_SPEED = 160; // px/sec WASD + arrows
 export const FOLLOW_SPEED = 220; // px/sec pointer follow
 export const FIXED_DT = 1 / 60;
+
+/** Sim speed multiplier (1 = normal). Used by the RAF loop so wall-clock maps to more FIXED_DT steps.
+ *  100x is for automated logic/scoring verification only — not a substitute for real-time feel checks.
+ */
+let speedMultiplier = 1;
+
+export function getSpeedMultiplier() {
+  return speedMultiplier;
+}
+
+/**
+ * Set sim speed (default 1). Clamped to (0, 1000]. Invalid → 1.
+ * Prefer URL ?speed=100 or __TERRY__.setSpeedMultiplier for tests — no player-facing UI.
+ */
+export function setSpeedMultiplier(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) {
+    speedMultiplier = 1;
+    return speedMultiplier;
+  }
+  speedMultiplier = Math.min(1000, v);
+  return speedMultiplier;
+}
+
+/** Parse ?speed= from a search string. Returns null if absent/invalid. */
+export function parseSpeedFromSearch(search = '') {
+  const q = String(search || '');
+  const raw = q.startsWith('?') ? q.slice(1) : q;
+  const params = new URLSearchParams(raw);
+  if (!params.has('speed')) return null;
+  const n = Number(params.get('speed'));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+/** True when ?dev=1 (enables quiet speed hotkey). */
+export function parseDevFromSearch(search = '') {
+  const q = String(search || '');
+  const raw = q.startsWith('?') ? q.slice(1) : q;
+  return new URLSearchParams(raw).get('dev') === '1';
+}
+
 export const WAVE_PERIOD = 8; // seconds full in+out cycle
 export const WET_BAND_FRAC = 0.18;
 /** Peak wave reaches this fraction of canvas height (almost full screen). */
@@ -544,6 +586,33 @@ export function update(state, dt) {
   }
 
   return events;
+}
+
+/**
+ * Advance wall-clock time through the fixed-step sim at the given speed.
+ * Returns aggregate events. Caps steps so a huge hitch cannot melt the CPU.
+ */
+export function advanceWallTime(state, wallDt, speed = getSpeedMultiplier(), maxSteps = 600) {
+  const events = {
+    clinks: 0,
+    waveWhoosh: null,
+    fart: false,
+    waveHit: false,
+    seagull: false,
+  };
+  let budget = Math.max(0, wallDt) * (speed > 0 ? speed : 1);
+  let steps = 0;
+  while (budget >= FIXED_DT && steps < maxSteps) {
+    const ev = update(state, FIXED_DT);
+    events.clinks += ev.clinks;
+    if (ev.waveWhoosh) events.waveWhoosh = ev.waveWhoosh;
+    if (ev.fart) events.fart = true;
+    if (ev.waveHit) events.waveHit = true;
+    if (ev.seagull) events.seagull = true;
+    budget -= FIXED_DT;
+    steps += 1;
+  }
+  return { events, steps, remainder: budget };
 }
 
 export function activeGlass(state) {

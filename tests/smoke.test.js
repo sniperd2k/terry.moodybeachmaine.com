@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +35,11 @@ import {
   movementFromKeys,
   setKeyboardMode,
   setMouseMode,
+  getSpeedMultiplier,
+  setSpeedMultiplier,
+  parseSpeedFromSearch,
+  parseDevFromSearch,
+  advanceWallTime,
 } from '../src/game.js';
 import { AUDIO_UNLOCK_EVENTS } from '../src/audio.js';
 
@@ -512,5 +517,207 @@ describe('arrow keys + keyboard/mouse input mode', () => {
     expect(game).toContain('arrowup');
     expect(game).toContain('arrowright');
     expect(game).toContain("inputMode === 'mouse'");
+  });
+});
+
+
+describe('100x speed mode (logic/scoring verification)', () => {
+  afterEach(() => {
+    setSpeedMultiplier(1);
+  });
+
+  it('defaults to 1x; setSpeedMultiplier toggles to 100x', () => {
+    setSpeedMultiplier(1);
+    expect(getSpeedMultiplier()).toBe(1);
+    expect(setSpeedMultiplier(100)).toBe(100);
+    expect(getSpeedMultiplier()).toBe(100);
+    expect(setSpeedMultiplier(0)).toBe(1); // invalid → 1
+    expect(setSpeedMultiplier(-5)).toBe(1);
+    expect(setSpeedMultiplier(NaN)).toBe(1);
+  });
+
+  it('parseSpeedFromSearch / parseDevFromSearch (URL toggle, no player UI)', () => {
+    expect(parseSpeedFromSearch('')).toBeNull();
+    expect(parseSpeedFromSearch('?foo=1')).toBeNull();
+    expect(parseSpeedFromSearch('?speed=100')).toBe(100);
+    expect(parseSpeedFromSearch('speed=50&dev=1')).toBe(50);
+    expect(parseSpeedFromSearch('?speed=nope')).toBeNull();
+    expect(parseDevFromSearch('?dev=1')).toBe(true);
+    expect(parseDevFromSearch('?dev=0')).toBe(false);
+    expect(parseDevFromSearch('')).toBe(false);
+  });
+
+  it('main.js wires ?speed= + setter + quiet ?dev=1 hotkey (no on-screen speed button)', () => {
+    const main = readFileSync(join(root, 'src/main.js'), 'utf8');
+    expect(main).toContain('parseSpeedFromSearch');
+    expect(main).toContain('setSpeedMultiplier');
+    expect(main).toContain('getSpeedMultiplier');
+    expect(main).toContain('dt * getSpeedMultiplier()');
+    expect(main).toContain("e.key !== '0'");
+    expect(main).toContain('parseDevFromSearch');
+    // No player-facing speed control widget
+    expect(main).not.toMatch(/id=["']speed["']/i);
+    expect(main).not.toMatch(/<button[^>]*>[^<]*speed/i);
+    const html = readFileSync(join(root, 'index.html'), 'utf8');
+    expect(html).not.toMatch(/id=["']speed["']/i);
+    expect(html).not.toMatch(/<button[^>]*>[^<]*speed/i);
+  });
+
+  it('at 100x: glass still +1¢ per pickup', () => {
+    setSpeedMultiplier(100);
+    const state = createState(400, 600);
+    state.waveHitThisCycle = true;
+    state.glass = [];
+    for (let i = 0; i < 3; i++) {
+      state.glass.push({
+        id: 100 + i,
+        x: state.terry.x,
+        y: state.terry.y,
+        r: 8,
+        hue: 180,
+        collected: false,
+        immuneUntil: 0,
+      });
+    }
+    // Only first overlaps; collect one-by-one
+    const g0 = state.glass[0];
+    const res = collectGlass(state, g0);
+    expect(res.collected).toBe(true);
+    expect(res.currentCents).toBe(GLASS_CENTS);
+    setHeldCents(state, res.currentCents);
+    expect(state.currentCents).toBe(1);
+
+    // advanceWallTime at 100x still applies FIXED_DT physics identically
+    const { steps } = advanceWallTime(state, 0.05, 100);
+    expect(steps).toBeGreaterThan(1);
+    expect(getSpeedMultiplier()).toBe(100);
+  });
+
+  it('at 100x: wave hit still −1¢ and drops glass', () => {
+    setSpeedMultiplier(100);
+    const state = createState(400, 600);
+    setHeldCents(state, 5);
+    const glassBefore = state.glass.length;
+    const hit = applyWaveHit(state);
+    expect(hit.dropped).toBe(true);
+    expect(state.currentCents).toBe(4);
+    expect(state.score).toBe(4);
+    expect(state.glass.length).toBe(glassBefore + 1);
+    expect(state.terry.y).toBe(state.h - state.terry.r - 8);
+
+    // Scripted wave overlap via update stepping (same logic at any wall speed)
+    setHeldCents(state, 3);
+    state.glass = [];
+    state.terry.y = state.h * 0.35;
+    state.terry.x = state.w / 2;
+    state.time = 1.5;
+    state.wavePhase = wavePhase(state.time);
+    state.lastWaterY = waterEdgeY(state.wavePhase, state.h);
+    state.waveHitThisCycle = false;
+    let sawHit = false;
+    for (let i = 0; i < 120; i++) {
+      const ev = update(state, FIXED_DT);
+      if (ev.waveHit) {
+        sawHit = true;
+        break;
+      }
+    }
+    expect(sawHit).toBe(true);
+    expect(state.currentCents).toBe(2);
+  });
+
+  it('at 100x: win when held reaches 10¢ (finale)', () => {
+    setSpeedMultiplier(100);
+    const state = createState(400, 600);
+    setHeldCents(state, 9);
+    state.waveHitThisCycle = true;
+    state.glass = [{
+      id: 999,
+      x: state.terry.x,
+      y: state.terry.y,
+      r: 8,
+      hue: 180,
+      collected: false,
+      immuneUntil: 0,
+    }];
+    const ev = update(state, FIXED_DT);
+    expect(ev.clinks).toBe(1);
+    expect(ev.fart).toBe(true);
+    expect(state.mode).toBe('farting');
+    expect(state.currentCents).toBe(0); // cleared on finale start
+  });
+
+  it('100x wall-clock playthrough (collect→finale→seagull→reset) finishes under ~1s', () => {
+    setSpeedMultiplier(100);
+    const state = createState(400, 600);
+    state.waveHitThisCycle = true;
+    state.glass = [];
+    // Place 10 collectible glass on Terry
+    for (let i = 0; i < 10; i++) {
+      state.glass.push({
+        id: 500 + i,
+        x: state.terry.x,
+        y: state.terry.y,
+        r: 8,
+        hue: 170,
+        collected: false,
+        immuneUntil: 0,
+      });
+    }
+
+    const t0 = performance.now();
+    let sawFinale = false;
+    let sawSeagull = false;
+    let sawReset = false;
+    // ~8s game-time covers fart + fly + seagull at normal pacing; at 100x ≈ 0.08s wall
+    // Budget a bit more wall time for CI headroom.
+    for (let wall = 0; wall < 0.5; wall += 0.016) {
+      const { events } = advanceWallTime(state, 0.016, 100);
+      if (events.fart) sawFinale = true;
+      if (events.seagull) sawSeagull = true;
+      if (state.mode === 'play' && sawSeagull && state.seagull === null) {
+        sawReset = true;
+        break;
+      }
+      // Keep remaining glass under crab until all collected / finale
+      if (state.mode === 'play') {
+        for (const g of state.glass) {
+          if (!g.collected) {
+            g.x = state.terry.x;
+            g.y = state.terry.y;
+            g.immuneUntil = 0;
+          }
+        }
+      }
+    }
+    const elapsed = performance.now() - t0;
+    expect(sawFinale).toBe(true);
+    expect(sawSeagull).toBe(true);
+    expect(sawReset).toBe(true);
+    expect(state.mode).toBe('play');
+    expect(state.currentCents).toBe(0);
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it('1x path unchanged: same FIXED_DT physics as before speed mode', () => {
+    setSpeedMultiplier(1);
+    const a = createState(400, 600);
+    const b = createState(400, 600);
+    a.waveHitThisCycle = true;
+    b.waveHitThisCycle = true;
+    a.glass = [];
+    b.glass = [];
+    a.keys.d = true;
+    b.keys.d = true;
+    update(a, FIXED_DT);
+    update(b, FIXED_DT);
+    expect(a.terry.x).toBeCloseTo(b.terry.x, 10);
+    expect(getSpeedMultiplier()).toBe(1);
+    // advanceWallTime at 1x ≈ one FIXED_DT per 1/60s wall
+    const state = createState(400, 600);
+    state.waveHitThisCycle = true;
+    state.glass = [];
+    const { steps } = advanceWallTime(state, FIXED_DT, 1);
+    expect(steps).toBe(1);
   });
 });

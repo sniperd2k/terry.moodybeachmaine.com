@@ -273,3 +273,91 @@ test('arrow keys move Terry; keyboard then mouse mode switch', async ({ page }) 
   expect(afterMouse.pointerActive).toBe(true);
   expect(afterMouse.x).toBeGreaterThan(mid.x);
 });
+
+test('100x speed mode: URL ?speed=100 + setter; scoring holds', async ({ page }) => {
+  await page.goto('/?speed=100');
+  await page.waitForFunction(() => window.__TERRY__?.getSpeedMultiplier);
+  const boot = await page.evaluate(() => window.__TERRY__.getSpeedMultiplier());
+  expect(boot).toBe(100);
+
+  // Glass +1¢ still holds under 100x
+  const glass = await page.evaluate(() => {
+    window.__TERRY__.setSpeedMultiplier(100);
+    const s = window.__TERRY__.getState();
+    window.__TERRY__.setHeldCents(0);
+    s.mode = 'play';
+    s.waveHitThisCycle = true;
+    s.glass = [{ id: 4242, x: s.terry.x, y: s.terry.y, r: 8, hue: 180, collected: false, immuneUntil: 0 }];
+    return { before: s.currentCents };
+  });
+  expect(glass.before).toBe(0);
+  await page.waitForFunction(() => {
+    const s = window.__TERRY__.getState();
+    const g = s.glass.find((x) => x.id === 4242);
+    if (g && !g.collected && s.mode === 'play') {
+      g.x = s.terry.x;
+      g.y = s.terry.y;
+      g.immuneUntil = 0;
+    }
+    return s.currentCents >= 1 || s.mode !== 'play';
+  }, { timeout: 2000 });
+  const afterGlass = await page.evaluate(() => window.__TERRY__.getCurrentCents());
+  expect(afterGlass).toBeGreaterThanOrEqual(1);
+
+  // Wave penalty −1¢ + drop
+  const wave = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    window.__TERRY__.setHeldCents(5);
+    const before = s.glass.length;
+    const hit = window.__TERRY__.applyWaveHit();
+    return {
+      dropped: hit?.dropped === true,
+      cents: s.currentCents,
+      glassDelta: s.glass.length - before,
+      speed: window.__TERRY__.getSpeedMultiplier(),
+    };
+  });
+  expect(wave.speed).toBe(100);
+  expect(wave.dropped).toBe(true);
+  expect(wave.cents).toBe(4);
+  expect(wave.glassDelta).toBe(1);
+
+  // Win at held 10¢
+  await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    window.__TERRY__.setHeldCents(9);
+    s.mode = 'play';
+    s.waveHitThisCycle = true;
+    s.glass = [{ id: 7777, x: s.terry.x, y: s.terry.y, r: 8, hue: 180, collected: false, immuneUntil: 0 }];
+  });
+  await page.waitForFunction(() => {
+    const s = window.__TERRY__.getState();
+    const g = s.glass.find((x) => x.id === 7777);
+    if (g && !g.collected && s.mode === 'play') {
+      g.x = s.terry.x;
+      g.y = s.terry.y;
+      g.immuneUntil = 0;
+    }
+    return s.mode === 'farting' || s.mode === 'flying' || s.mode === 'seagull';
+  }, { timeout: 2000 });
+  const finale = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    return { mode: s.mode, speed: window.__TERRY__.getSpeedMultiplier() };
+  });
+  expect(['farting', 'flying', 'seagull']).toContain(finale.mode);
+  expect(finale.speed).toBe(100);
+
+  // Setter back to 1x (default OFF for normal play)
+  const reset = await page.evaluate(() => {
+    window.__TERRY__.setSpeedMultiplier(1);
+    return window.__TERRY__.getSpeedMultiplier();
+  });
+  expect(reset).toBe(1);
+});
+
+test('default load is 1x (speed mode off)', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__TERRY__?.getSpeedMultiplier);
+  const speed = await page.evaluate(() => window.__TERRY__.getSpeedMultiplier());
+  expect(speed).toBe(1);
+});

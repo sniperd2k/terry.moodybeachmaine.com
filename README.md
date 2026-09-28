@@ -22,3 +22,13 @@ npm run serve
 ```
 
 Original pixel art only — original art only — no third-party characters.
+
+## Speed mode (tests only)
+
+Sim speed defaults to **1x** (normal play). For automated logic/scoring checks you can run at **100x**:
+
+- URL: `?speed=100` (e.g. `http://127.0.0.1:4177/?speed=100`)
+- Harness: `window.__TERRY__.setSpeedMultiplier(100)` / `getSpeedMultiplier()`
+- Quiet hotkey (only with `?dev=1`): press `0` to toggle 1x ↔ 100x
+
+**100x is for logic/scoring verification only — not a substitute for real-time feel checks.** There is no on-screen speed button for players. Physics, waves, glass, seagull, and scoring all use the same `FIXED_DT` steps; the multiplier only maps wall-clock time to more steps per frame.

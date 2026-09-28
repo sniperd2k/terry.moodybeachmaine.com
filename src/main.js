@@ -12,6 +12,10 @@ import {
   GLASS_SPAWN_BELOW_WATER,
   FINALE_CENTS,
   WAVE_GLASS_PUSH_FRAC,
+  getSpeedMultiplier,
+  setSpeedMultiplier,
+  parseSpeedFromSearch,
+  parseDevFromSearch,
 } from './game.js';
 import {
   drawBeach,
@@ -170,8 +174,11 @@ function render() {
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  accum += dt;
-  while (accum >= FIXED_DT) {
+  // Speed mode: wall-clock × multiplier → more FIXED_DT steps (logic/scoring at 100x; feel stays at 1x).
+  accum += dt * getSpeedMultiplier();
+  let steps = 0;
+  const MAX_STEPS = 600; // ~10s game-time per frame cap
+  while (accum >= FIXED_DT && steps < MAX_STEPS) {
     const ev = update(state, FIXED_DT);
     if (ev.clinks) for (let i = 0; i < ev.clinks; i++) playClink();
     if (ev.waveWhoosh) playWaveWhoosh(ev.waveWhoosh);
@@ -179,9 +186,26 @@ function frame(now) {
     if (ev.waveHit) playBoing();
     if (ev.seagull) playSeagull();
     accum -= FIXED_DT;
+    steps += 1;
   }
+  if (steps >= MAX_STEPS) accum = 0;
   render();
   requestAnimationFrame(frame);
+}
+
+// Speed mode: URL ?speed=100 (default 1x). No on-screen player control.
+const bootSearch = typeof location !== 'undefined' ? location.search : '';
+const bootSpeed = parseSpeedFromSearch(bootSearch);
+if (bootSpeed != null) setSpeedMultiplier(bootSpeed);
+const bootDev = parseDevFromSearch(bootSearch);
+
+// Quiet hotkey only with ?dev=1: press "0" to toggle 1x ↔ 100x (no player UI).
+if (bootDev) {
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== '0' || e.metaKey || e.ctrlKey || e.altKey) return;
+    const next = getSpeedMultiplier() >= 50 ? 1 : 100;
+    setSpeedMultiplier(next);
+  });
 }
 
 resize();
@@ -192,6 +216,8 @@ window.__TERRY__ = {
   getScore: () => state?.currentCents ?? 0,
   getCurrentCents: () => state?.currentCents ?? 0,
   setHeldCents: (n) => (state ? setHeldCents(state, n) : null),
+  getSpeedMultiplier,
+  setSpeedMultiplier,
   unlockAudio,
   isAudioUnlocked,
   getAudioState,
