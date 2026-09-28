@@ -9,7 +9,8 @@ Playful original 8-bit beach game: **Terry** the crab collects sea glass.
 
 - Mouse / pointer follow, WASD, or touch
 - Each sea glass = **1¢**; HUD shows cents
-- At **25¢**: fart cloud → Terry flies off → seagull deposits her back → play on
+- Waves sweep almost full-screen; a hit bounces Terry down-beach and drops 1¢ glass back (if score > 0)
+- Finale at **lifetime 25¢ collected** (survives HUD resets / wave drops): fart cloud → Terry flies off → seagull deposits her back → play on (loops every 25¢)
 
 ## Dev
 

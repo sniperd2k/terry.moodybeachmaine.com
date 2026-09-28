@@ -14,7 +14,7 @@ import {
   drawSeagull,
   drawHUD,
 } from './draw.js';
-import { ensureAudio, playClink, playWaveWhoosh, playFart } from './audio.js';
+import { unlockAudio, playClink, playWaveWhoosh, playFart } from './audio.js';
 
 const canvas = document.getElementById('beach');
 const ctx = canvas.getContext('2d');
@@ -55,7 +55,7 @@ function canvasPos(e) {
 }
 
 function onPointer(e, active) {
-  ensureAudio();
+  unlockAudio();
   if (!state || state.mode !== 'play') return;
   const p = canvasPos(e);
   state.pointer.active = active;
@@ -64,6 +64,7 @@ function onPointer(e, active) {
 }
 
 canvas.addEventListener('pointerdown', (e) => {
+  unlockAudio();
   canvas.setPointerCapture?.(e.pointerId);
   onPointer(e, true);
 });
@@ -72,6 +73,7 @@ canvas.addEventListener('pointermove', (e) => {
   else if (e.pointerType === 'mouse') {
     // soft follow while mouse is over canvas
     if (!state) return;
+    unlockAudio();
     const p = canvasPos(e);
     state.pointer.x = p.x;
     state.pointer.y = p.y;
@@ -84,12 +86,16 @@ canvas.addEventListener('pointerup', () => {
 canvas.addEventListener('pointerleave', () => {
   if (state) state.pointer.active = false;
 });
-canvas.addEventListener('touchstart', (e) => { e.preventDefault(); onPointer(e, true); }, { passive: false });
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  unlockAudio();
+  onPointer(e, true);
+}, { passive: false });
 canvas.addEventListener('touchmove', (e) => { e.preventDefault(); onPointer(e, true); }, { passive: false });
 canvas.addEventListener('touchend', () => { if (state) state.pointer.active = false; });
 
 window.addEventListener('keydown', (e) => {
-  ensureAudio();
+  unlockAudio();
   if (!state) return;
   const k = e.key.toLowerCase();
   if (k in state.keys) {
@@ -102,6 +108,14 @@ window.addEventListener('keyup', (e) => {
   const k = e.key.toLowerCase();
   if (k in state.keys) state.keys[k] = false;
 });
+
+// Capture first gesture anywhere (autoplay unlock even if outside canvas)
+function unlockOnce() {
+  unlockAudio();
+}
+window.addEventListener('pointerdown', unlockOnce, { capture: true });
+window.addEventListener('touchstart', unlockOnce, { capture: true, passive: true });
+window.addEventListener('keydown', unlockOnce, { capture: true });
 
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', resize);
@@ -152,4 +166,6 @@ requestAnimationFrame(frame);
 window.__TERRY__ = {
   getState: () => state,
   getScore: () => state?.score ?? 0,
+  getLifetimeCollected: () => state?.lifetimeCollected ?? 0,
+  unlockAudio,
 };

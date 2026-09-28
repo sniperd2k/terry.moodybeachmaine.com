@@ -12,6 +12,12 @@ export const FOLLOW_SPEED = 220; // px/sec pointer follow
 export const FIXED_DT = 1 / 60;
 export const WAVE_PERIOD = 8; // seconds full in+out cycle
 export const WET_BAND_FRAC = 0.18;
+/** Peak wave reaches this fraction of canvas height (almost full screen). */
+export const WAVE_MAX_DEPTH = 0.88;
+/** Low-tide water edge fraction. */
+export const WAVE_MIN_DEPTH = 0.08;
+/** Downward bounce distance when a wave hits Terry. */
+export const WAVE_BOUNCE = 48;
 
 /** @deprecated alias kept for clarity in docs */
 export const GLASS_POINTS = GLASS_CENTS;
@@ -25,13 +31,16 @@ export function wavePhase(t, period = WAVE_PERIOD) {
 
 /** Water edge Y as fraction of canvas height (top = water). Higher = more water. */
 export function waterEdgeY(phase, h) {
-  const depth = 0.12 + 0.14 * (0.5 - 0.5 * Math.cos(phase * Math.PI * 2));
+  // Cosine: 0 and 1 → min depth, 0.5 → almost full-screen max depth
+  const depth =
+    WAVE_MIN_DEPTH +
+    (WAVE_MAX_DEPTH - WAVE_MIN_DEPTH) * (0.5 - 0.5 * Math.cos(phase * Math.PI * 2));
   return depth * h;
 }
 
 export function wetSandBand(waterY, h) {
   const band = WET_BAND_FRAC * h;
-  return { top: waterY, bottom: Math.min(h * 0.55, waterY + band) };
+  return { top: waterY, bottom: Math.min(h - 16, waterY + band) };
 }
 
 export function createGlass(x, y, id) {
@@ -64,41 +73,86 @@ export function overlaps(ax, ay, ar, bx, by, br) {
   return dx * dx + dy * dy <= rr * rr;
 }
 
+/** True when the water edge overlaps the crab body. */
+export function waveOverlapsCrab(waterY, terry) {
+  return waterY >= terry.y - terry.r;
+}
+
 export function createState(w, h) {
   const waterY = waterEdgeY(0, h);
   const spawn = spawnGlassInWetBand(waterY, w, h, 8, 1);
   return {
     w,
     h,
-    score: 0, // cents
-    terry: { x: w / 2, y: h * 0.62, vx: 0, vy: 0, r: TERRY_RADIUS },
+    score: 0, // cents shown on HUD (can drop on wave hit; resets after finale)
+    lifetimeCollected: 0, // cumulative ¢ collected toward finale; resets only when finale starts
+    terry: { x: w / 2, y: h * 0.72, vx: 0, vy: 0, r: TERRY_RADIUS },
     glass: spawn.items,
     nextGlassId: spawn.nextId,
     time: 0,
     wavePhase: 0,
     lastWaterY: waterY,
     prevWaterY: waterY,
+    waveHitThisCycle: false,
     mode: 'play', // play | farting | flying | seagull | returning
     fartTimer: 0,
     fartClouds: [],
     seagull: null, // { x, y, vx, vy, phase: 'enter'|'carry'|'exit' }
     keys: { w: false, a: false, s: false, d: false },
-    pointer: { active: false, x: w / 2, y: h * 0.62 },
+    pointer: { active: false, x: w / 2, y: h * 0.72 },
     labelAlways: true,
   };
 }
 
 export function collectGlass(state, glass) {
-  if (glass.collected) return { collected: false, score: state.score, finale: false };
+  if (glass.collected) {
+    return {
+      collected: false,
+      score: state.score,
+      lifetimeCollected: state.lifetimeCollected,
+      finale: false,
+    };
+  }
   glass.collected = true;
   const score = state.score + GLASS_CENTS;
-  const finale = score >= FINALE_CENTS && state.mode === 'play';
-  return { collected: true, score, finale };
+  const lifetimeCollected = state.lifetimeCollected + GLASS_CENTS;
+  const finale = lifetimeCollected >= FINALE_CENTS && state.mode === 'play';
+  return { collected: true, score, lifetimeCollected, finale };
+}
+
+/**
+ * Wave knocks Terry down-beach and she drops one 1¢ glass back onto the sand
+ * if she has any on the HUD score. Lifetime total is NOT decremented.
+ */
+export function applyWaveHit(state) {
+  const waterY = state.lastWaterY;
+  state.terry.y = Math.min(
+    state.h - state.terry.r - 8,
+    Math.max(state.terry.y + WAVE_BOUNCE, waterY + state.terry.r + 20),
+  );
+  state.terry.vy = Math.max(state.terry.vy, 140);
+
+  let dropped = false;
+  if (state.score > 0) {
+    state.score -= GLASS_CENTS;
+    // Spawn outside crab overlap so she does not instantly re-collect
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const gx = Math.max(
+      GLASS_RADIUS + 4,
+      Math.min(state.w - GLASS_RADIUS - 4, state.terry.x + side * (state.terry.r + GLASS_RADIUS + 10)),
+    );
+    const gy = Math.min(state.h - 24, state.terry.y + state.terry.r + 6);
+    state.glass.push(createGlass(gx, gy, state.nextGlassId++));
+    dropped = true;
+  }
+  return { dropped };
 }
 
 export function beginFart(state) {
   state.mode = 'farting';
   state.fartTimer = 0;
+  // Reset lifetime so the next 25¢ collected can fire finale again
+  state.lifetimeCollected = 0;
   state.fartClouds = [];
   for (let i = 0; i < 16; i++) {
     state.fartClouds.push({
@@ -115,22 +169,24 @@ export function beginFart(state) {
 
 export function afterFinaleReset(state) {
   state.score = 0;
+  // lifetimeCollected already cleared when finale began
   state.mode = 'play';
   state.fartTimer = 0;
   state.fartClouds = [];
   state.seagull = null;
+  state.waveHitThisCycle = false;
   state.terry.x = state.w / 2;
-  state.terry.y = state.h * 0.62;
+  state.terry.y = state.h * 0.72;
   state.terry.vx = 0;
   state.terry.vy = 0;
 }
 
 /**
  * Fixed-timestep update. Returns events for audio/UI.
- * events: { clinks: number, waveWhoosh: 'in'|'out'|null, fart: bool }
+ * events: { clinks: number, waveWhoosh: 'in'|'out'|null, fart: bool, waveHit: bool }
  */
 export function update(state, dt) {
-  const events = { clinks: 0, waveWhoosh: null, fart: false };
+  const events = { clinks: 0, waveWhoosh: null, fart: false, waveHit: false };
   state.time += dt;
   const prevPhase = state.wavePhase;
   state.wavePhase = wavePhase(state.time);
@@ -142,6 +198,11 @@ export function update(state, dt) {
   const crossedOut = prevPhase < 0.75 && state.wavePhase >= 0.75;
   if (crossedIn) events.waveWhoosh = 'in';
   if (crossedOut) events.waveWhoosh = 'out';
+
+  // Clear per-wave hit latch once the tide is mostly out
+  if (state.wavePhase >= 0.85 || state.wavePhase < 0.02) {
+    state.waveHitThisCycle = false;
+  }
 
   // Deposit glass when wave finishes receding
   if (prevPhase < 0.9 && state.wavePhase >= 0.9) {
@@ -235,7 +296,7 @@ export function update(state, dt) {
       g.y += g.vy * dt;
       state.terry.x = g.x;
       state.terry.y = g.y + 28;
-      const landY = state.h * 0.62;
+      const landY = state.h * 0.72;
       if (state.terry.y >= landY) {
         state.terry.y = landY;
         g.phase = 'exit';
@@ -285,9 +346,21 @@ export function update(state, dt) {
   state.terry.x += state.terry.vx * dt;
   state.terry.y += state.terry.vy * dt;
 
-  const minY = waterY + state.terry.r + 4;
+  // Full beach range — waves may sweep over Terry (no hard "always below water" clamp)
   state.terry.x = Math.max(state.terry.r, Math.min(state.w - state.terry.r, state.terry.x));
-  state.terry.y = Math.max(minY, Math.min(state.h - state.terry.r - 8, state.terry.y));
+  state.terry.y = Math.max(state.terry.r + 8, Math.min(state.h - state.terry.r - 8, state.terry.y));
+
+  // Wave hit: advancing tide overlaps crab → bounce down + drop 1¢ glass if score > 0
+  const advancing = state.wavePhase > 0.02 && state.wavePhase < 0.55;
+  if (advancing && waveOverlapsCrab(waterY, state.terry) && !state.waveHitThisCycle) {
+    state.waveHitThisCycle = true;
+    applyWaveHit(state);
+    events.waveHit = true;
+  } else if (waveOverlapsCrab(waterY, state.terry)) {
+    // Keep her from sitting under the water column after the hit
+    state.terry.y = Math.max(state.terry.y, waterY + state.terry.r + 4);
+    state.terry.y = Math.min(state.terry.y, state.h - state.terry.r - 8);
+  }
 
   for (const g of state.glass) {
     if (g.collected) continue;
@@ -295,6 +368,7 @@ export function update(state, dt) {
       const res = collectGlass(state, g);
       if (res.collected) {
         state.score = res.score;
+        state.lifetimeCollected = res.lifetimeCollected;
         events.clinks += 1;
         if (res.finale) {
           events.fart = true;

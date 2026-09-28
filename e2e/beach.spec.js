@@ -9,6 +9,9 @@ test('page loads with canvas, GA, score HUD path', async ({ page }) => {
   const score = await page.evaluate(() => window.__TERRY__.getScore());
   expect(typeof score).toBe('number');
   expect(score).toBeGreaterThanOrEqual(0);
+  const life = await page.evaluate(() => window.__TERRY__.getLifetimeCollected());
+  expect(typeof life).toBe('number');
+  expect(life).toBeGreaterThanOrEqual(0);
   const body = await page.content();
   expect(body).not.toContain('Canonicus');
   expect(body).not.toContain('VacationRental');
@@ -47,4 +50,32 @@ test('WASD / pointer moves Terry', async ({ page }) => {
     moved = Math.hypot(after.x - before.x, after.y - before.y);
   }
   expect(moved).toBeGreaterThan(2);
+});
+
+test('audio unlock is exposed and callable after gesture', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__TERRY__?.unlockAudio);
+  await page.locator('#beach').click({ position: { x: 40, y: 40 } });
+  const ok = await page.evaluate(async () => {
+    await window.__TERRY__.unlockAudio();
+    return typeof window.__TERRY__.unlockAudio === 'function';
+  });
+  expect(ok).toBe(true);
+});
+
+test('deep waves + lifetime fields on state', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__TERRY__?.getState());
+  const info = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    return {
+      maxDepthOk: true,
+      hasLifetime: typeof s.lifetimeCollected === 'number',
+      hasWaveHitFlag: typeof s.waveHitThisCycle === 'boolean',
+      terryYFrac: s.terry.y / s.h,
+    };
+  });
+  expect(info.hasLifetime).toBe(true);
+  expect(info.hasWaveHitFlag).toBe(true);
+  expect(info.terryYFrac).toBeGreaterThan(0.5);
 });
