@@ -7,7 +7,7 @@ export const GLASS_CENTS = 1;
 export const FINALE_CENTS = 25;
 export const TERRY_RADIUS = 14;
 export const GLASS_RADIUS = 8;
-export const TERRY_SPEED = 160; // px/sec WASD
+export const TERRY_SPEED = 160; // px/sec WASD + arrows
 export const FOLLOW_SPEED = 220; // px/sec pointer follow
 export const FIXED_DT = 1 / 60;
 export const WAVE_PERIOD = 8; // seconds full in+out cycle
@@ -115,10 +115,61 @@ export function createState(w, h) {
     fartTimer: 0,
     fartClouds: [],
     seagull: null, // { x, y, vx, vy, phase: 'enter'|'carry'|'exit' }
-    keys: { w: false, a: false, s: false, d: false },
+    keys: {
+      w: false,
+      a: false,
+      s: false,
+      d: false,
+      arrowup: false,
+      arrowdown: false,
+      arrowleft: false,
+      arrowright: false,
+    },
+    /** 'mouse' = follow crosshairs; 'keyboard' = WASD/arrows only until mouse moves */
+    inputMode: 'mouse',
     pointer: { active: false, x: w / 2, y: h * 0.72 },
     labelAlways: true,
   };
+}
+
+
+/** Movement vectors for WASD + arrow keys (same feel). */
+export const KEY_VECTORS = {
+  w: [0, -1],
+  s: [0, 1],
+  a: [-1, 0],
+  d: [1, 0],
+  arrowup: [0, -1],
+  arrowdown: [0, 1],
+  arrowleft: [-1, 0],
+  arrowright: [1, 0],
+};
+
+/** Net movement from held keys. Arrows match WASD. */
+export function movementFromKeys(keys) {
+  let mx = 0;
+  let my = 0;
+  if (keys.w || keys.arrowup) my -= 1;
+  if (keys.s || keys.arrowdown) my += 1;
+  if (keys.a || keys.arrowleft) mx -= 1;
+  if (keys.d || keys.arrowright) mx += 1;
+  return { mx, my };
+}
+
+/** Keyboard takes over: stop mouse/crosshair follow until mouse moves again. */
+export function setKeyboardMode(state) {
+  state.inputMode = 'keyboard';
+  if (state.pointer) state.pointer.active = false;
+}
+
+/** Mouse/touch resume: crab follows crosshairs again. */
+export function setMouseMode(state, x, y) {
+  state.inputMode = 'mouse';
+  if (state.pointer) {
+    state.pointer.active = true;
+    if (typeof x === 'number') state.pointer.x = x;
+    if (typeof y === 'number') state.pointer.y = y;
+  }
 }
 
 export function collectGlass(state, glass) {
@@ -341,17 +392,14 @@ export function update(state, dt) {
   }
 
   // --- play mode movement ---
-  let mx = 0;
-  let my = 0;
-  if (state.keys.w) my -= 1;
-  if (state.keys.s) my += 1;
-  if (state.keys.a) mx -= 1;
-  if (state.keys.d) mx += 1;
+  const { mx, my } = movementFromKeys(state.keys);
   if (mx || my) {
+    // Keyboard movement → leave mouse follow until mouse moves again
+    if (state.inputMode !== 'keyboard') setKeyboardMode(state);
     const len = Math.hypot(mx, my) || 1;
     state.terry.vx = (mx / len) * TERRY_SPEED;
     state.terry.vy = (my / len) * TERRY_SPEED;
-  } else if (state.pointer.active) {
+  } else if (state.inputMode === 'mouse' && state.pointer.active) {
     const dx = state.pointer.x - state.terry.x;
     const dy = state.pointer.y - state.terry.y;
     const dist = Math.hypot(dx, dy);

@@ -6,6 +6,8 @@ import {
   waterEdgeY,
   isGlassSubmerged,
   applyWaveHit,
+  setKeyboardMode,
+  setMouseMode,
 } from './game.js';
 import {
   drawBeach,
@@ -68,9 +70,13 @@ function onPointer(e, active) {
   unlockAudio();
   if (!state || state.mode !== 'play') return;
   const p = canvasPos(e);
-  state.pointer.active = active;
-  state.pointer.x = p.x;
-  state.pointer.y = p.y;
+  if (active) {
+    setMouseMode(state, p.x, p.y);
+  } else {
+    state.pointer.active = false;
+    state.pointer.x = p.x;
+    state.pointer.y = p.y;
+  }
 }
 
 canvas.addEventListener('pointerdown', (e) => {
@@ -83,13 +89,11 @@ canvas.addEventListener('click', () => { unlockAudio(); });
 canvas.addEventListener('pointermove', (e) => {
   if (e.buttons || (e.pointerType === 'touch' && state?.pointer.active)) onPointer(e, true);
   else if (e.pointerType === 'mouse') {
-    // soft follow while mouse is over canvas
+    // soft follow while mouse is over canvas — resumes mouse mode after keyboard
     if (!state) return;
     unlockAudio();
     const p = canvasPos(e);
-    state.pointer.x = p.x;
-    state.pointer.y = p.y;
-    state.pointer.active = true;
+    setMouseMode(state, p.x, p.y);
   }
 });
 canvas.addEventListener('pointerup', () => {
@@ -112,6 +116,7 @@ window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (k in state.keys) {
     state.keys[k] = true;
+    setKeyboardMode(state);
     e.preventDefault();
   }
 });

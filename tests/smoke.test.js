@@ -11,6 +11,7 @@ import {
   FINALE_CENTS,
   formatCents,
   FIXED_DT,
+  TERRY_SPEED,
   activeGlass,
   beginFart,
   waterEdgeY,
@@ -25,6 +26,10 @@ import {
   isGlassSubmerged,
   glassSpawnYAtWaterline,
   spawnGlassInWetBand,
+  KEY_VECTORS,
+  movementFromKeys,
+  setKeyboardMode,
+  setMouseMode,
 } from '../src/game.js';
 import { AUDIO_UNLOCK_EVENTS } from '../src/audio.js';
 
@@ -318,5 +323,112 @@ describe('deep waves + wave hit drop', () => {
     const scoreBefore = state.score;
     update(state, FIXED_DT);
     expect(state.score).toBe(scoreBefore); // still immune
+  });
+});
+
+
+describe('arrow keys + keyboard/mouse input mode', () => {
+  it('KEY_VECTORS maps arrows same as WASD', () => {
+    expect(KEY_VECTORS.arrowup).toEqual(KEY_VECTORS.w);
+    expect(KEY_VECTORS.arrowdown).toEqual(KEY_VECTORS.s);
+    expect(KEY_VECTORS.arrowleft).toEqual(KEY_VECTORS.a);
+    expect(KEY_VECTORS.arrowright).toEqual(KEY_VECTORS.d);
+    expect(KEY_VECTORS.w).toEqual([0, -1]);
+    expect(KEY_VECTORS.s).toEqual([0, 1]);
+    expect(KEY_VECTORS.a).toEqual([-1, 0]);
+    expect(KEY_VECTORS.d).toEqual([1, 0]);
+  });
+
+  it('movementFromKeys: arrows produce same vectors as WASD', () => {
+    const wasd = { w: true, a: false, s: false, d: false, arrowup: false, arrowdown: false, arrowleft: false, arrowright: false };
+    const arrows = { w: false, a: false, s: false, d: false, arrowup: true, arrowdown: false, arrowleft: false, arrowright: false };
+    expect(movementFromKeys(wasd)).toEqual({ mx: 0, my: -1 });
+    expect(movementFromKeys(arrows)).toEqual(movementFromKeys(wasd));
+
+    const leftW = { ...wasd, w: false, a: true };
+    const leftA = { ...arrows, arrowup: false, arrowleft: true };
+    expect(movementFromKeys(leftA)).toEqual(movementFromKeys(leftW));
+    expect(movementFromKeys(leftW)).toEqual({ mx: -1, my: 0 });
+  });
+
+  it('arrow keys move Terry with same speed feel as WASD', () => {
+    const a = createState(400, 600);
+    const b = createState(400, 600);
+    a.waveHitThisCycle = true;
+    b.waveHitThisCycle = true;
+    a.glass = [];
+    b.glass = [];
+    const x0 = a.terry.x;
+    a.keys.d = true;
+    b.keys.arrowright = true;
+    update(a, FIXED_DT);
+    update(b, FIXED_DT);
+    expect(a.terry.vx).toBe(TERRY_SPEED);
+    expect(b.terry.vx).toBe(TERRY_SPEED);
+    expect(a.terry.x - x0).toBeCloseTo(b.terry.x - x0, 5);
+    expect(a.inputMode).toBe('keyboard');
+    expect(b.inputMode).toBe('keyboard');
+  });
+
+  it('keyboard → no mouse follow even if pointer still active', () => {
+    const state = createState(400, 600);
+    state.waveHitThisCycle = true;
+    state.glass = [];
+    state.pointer.active = true;
+    state.pointer.x = state.w * 0.9;
+    state.pointer.y = state.h * 0.9;
+    state.inputMode = 'mouse';
+
+    // Start keyboard move
+    state.keys.w = true;
+    update(state, FIXED_DT);
+    expect(state.inputMode).toBe('keyboard');
+    expect(state.pointer.active).toBe(false);
+    expect(state.terry.vy).toBe(-TERRY_SPEED);
+
+    // Release keys; pointer coords still far away — must NOT resume mouse follow
+    state.keys.w = false;
+    state.pointer.active = true; // stale/active leftover must be ignored in keyboard mode
+    state.pointer.x = state.w * 0.9;
+    state.pointer.y = state.h * 0.9;
+    const xBefore = state.terry.x;
+    const yBefore = state.terry.y;
+    for (let i = 0; i < 30; i++) update(state, FIXED_DT);
+    // Should coast/decay toward stop, not chase pointer into corner
+    expect(state.inputMode).toBe('keyboard');
+    expect(Math.abs(state.terry.x - xBefore)).toBeLessThan(40);
+    expect(state.terry.y).toBeLessThan(yBefore + 5); // was moving up; not yanked down to pointer
+  });
+
+  it('mousemove (setMouseMode) → resume crosshair follow', () => {
+    const state = createState(400, 600);
+    state.waveHitThisCycle = true;
+    state.glass = [];
+    setKeyboardMode(state);
+    expect(state.inputMode).toBe('keyboard');
+    expect(state.pointer.active).toBe(false);
+
+    const targetX = state.w * 0.85;
+    const targetY = state.h * 0.75;
+    setMouseMode(state, targetX, targetY);
+    expect(state.inputMode).toBe('mouse');
+    expect(state.pointer.active).toBe(true);
+    expect(state.pointer.x).toBe(targetX);
+    expect(state.pointer.y).toBe(targetY);
+
+    const x0 = state.terry.x;
+    for (let i = 0; i < 45; i++) update(state, FIXED_DT);
+    expect(state.terry.x).toBeGreaterThan(x0);
+    expect(state.terry.x).toBeGreaterThan(state.w * 0.55);
+  });
+
+  it('main.js wires arrows into keys + mode switch helpers', () => {
+    const main = readFileSync(join(root, 'src/main.js'), 'utf8');
+    expect(main).toContain('setKeyboardMode');
+    expect(main).toContain('setMouseMode');
+    const game = readFileSync(join(root, 'src/game.js'), 'utf8');
+    expect(game).toContain('arrowup');
+    expect(game).toContain('arrowright');
+    expect(game).toContain("inputMode === 'mouse'");
   });
 });

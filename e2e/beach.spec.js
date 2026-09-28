@@ -154,3 +154,54 @@ test('wave-hit drop at waterline works with touch/pointer active', async ({ page
 
   await page.mouse.up().catch(() => {});
 });
+
+
+test('arrow keys move Terry; keyboard then mouse mode switch', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__TERRY__?.getState());
+
+  const before = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    return { x: s.terry.x, y: s.terry.y };
+  });
+
+  await page.keyboard.down('ArrowRight');
+  await page.waitForTimeout(350);
+  await page.keyboard.up('ArrowRight');
+
+  const afterArrow = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    return { x: s.terry.x, y: s.terry.y, mode: s.mode, inputMode: s.inputMode, pointerActive: s.pointer.active };
+  });
+  expect(afterArrow.mode).toBe('play');
+  expect(afterArrow.inputMode).toBe('keyboard');
+  expect(afterArrow.pointerActive).toBe(false);
+  expect(afterArrow.x - before.x).toBeGreaterThan(2);
+
+  // Stale pointer target while still in keyboard mode must not yank crab
+  await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    s.pointer.active = true;
+    s.pointer.x = 10;
+    s.pointer.y = 10;
+  });
+  await page.waitForTimeout(200);
+  const mid = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    return { x: s.terry.x, y: s.terry.y, inputMode: s.inputMode };
+  });
+  expect(mid.inputMode).toBe('keyboard');
+  expect(Math.hypot(mid.x - afterArrow.x, mid.y - afterArrow.y)).toBeLessThan(30);
+
+  // Mouse move resumes follow
+  const box = await page.locator('#beach').boundingBox();
+  await page.mouse.move(box.x + box.width * 0.85, box.y + box.height * 0.7);
+  await page.waitForTimeout(450);
+  const afterMouse = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    return { x: s.terry.x, inputMode: s.inputMode, pointerActive: s.pointer.active };
+  });
+  expect(afterMouse.inputMode).toBe('mouse');
+  expect(afterMouse.pointerActive).toBe(true);
+  expect(afterMouse.x).toBeGreaterThan(mid.x);
+});
