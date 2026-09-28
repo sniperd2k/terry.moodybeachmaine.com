@@ -16,8 +16,12 @@ export const WET_BAND_FRAC = 0.18;
 export const WAVE_MAX_DEPTH = 0.88;
 /** Low-tide water edge fraction. */
 export const WAVE_MIN_DEPTH = 0.08;
-/** Downward bounce distance when a wave hits Terry. */
-export const WAVE_BOUNCE = 48;
+/** Downward bounce distance when a wave hits Terry (px). */
+export const WAVE_BOUNCE = 110;
+/** Downward impulse velocity on wave hit (px/sec). */
+export const WAVE_BOUNCE_VY = 280;
+/** Seconds freshly dropped glass cannot be re-collected (touch follow fix). */
+export const DROP_IMMUNE_SEC = 0.45;
 
 /** @deprecated alias kept for clarity in docs */
 export const GLASS_POINTS = GLASS_CENTS;
@@ -43,7 +47,7 @@ export function wetSandBand(waterY, h) {
   return { top: waterY, bottom: Math.min(h - 16, waterY + band) };
 }
 
-export function createGlass(x, y, id) {
+export function createGlass(x, y, id, opts = {}) {
   return {
     id,
     x,
@@ -51,16 +55,29 @@ export function createGlass(x, y, id) {
     r: GLASS_RADIUS,
     hue: 160 + Math.floor(Math.random() * 80),
     collected: false,
+    /** If set, glass cannot be collected until state.time reaches this. */
+    immuneUntil: opts.immuneUntil ?? 0,
   };
 }
 
+/** True when glass center is under the water surface (toward water / smaller Y). */
+export function isGlassSubmerged(g, waterY) {
+  return g.y < waterY;
+}
+
+/** Drop / deposit spawn Y sits on the current water surface (visible, not submerged). */
+export function glassSpawnYAtWaterline(waterY, h) {
+  return Math.min((h ?? 1e9) - 24, Math.max(0, waterY));
+}
+
 export function spawnGlassInWetBand(waterY, w, h, count, nextId) {
-  const band = wetSandBand(waterY, h);
   const items = [];
   let id = nextId;
+  const surfaceY = glassSpawnYAtWaterline(waterY, h);
   for (let i = 0; i < count; i++) {
     const x = 24 + Math.random() * (w - 48);
-    const y = band.top + 8 + Math.random() * Math.max(8, band.bottom - band.top - 16);
+    // Spawn at waterline (± few px into sand so piece is visible, not submerged)
+    const y = surfaceY + Math.random() * 6;
     items.push(createGlass(x, y, id++));
   }
   return { items, nextId: id };
@@ -128,21 +145,31 @@ export function applyWaveHit(state) {
   const waterY = state.lastWaterY;
   state.terry.y = Math.min(
     state.h - state.terry.r - 8,
-    Math.max(state.terry.y + WAVE_BOUNCE, waterY + state.terry.r + 20),
+    Math.max(state.terry.y + WAVE_BOUNCE, waterY + state.terry.r + 28),
   );
-  state.terry.vy = Math.max(state.terry.vy, 140);
+  state.terry.vy = Math.max(state.terry.vy, WAVE_BOUNCE_VY);
+
+  // Release pointer/touch follow so mobile drag does not yank crab back onto the drop
+  if (state.pointer) state.pointer.active = false;
 
   let dropped = false;
   if (state.score > 0) {
     state.score -= GLASS_CENTS;
-    // Spawn outside crab overlap so she does not instantly re-collect
+    // Spawn at waterline, well beside crab, with brief collect immunity (touch path)
     const side = Math.random() < 0.5 ? -1 : 1;
     const gx = Math.max(
       GLASS_RADIUS + 4,
-      Math.min(state.w - GLASS_RADIUS - 4, state.terry.x + side * (state.terry.r + GLASS_RADIUS + 10)),
+      Math.min(
+        state.w - GLASS_RADIUS - 4,
+        state.terry.x + side * (state.terry.r + GLASS_RADIUS + 36),
+      ),
     );
-    const gy = Math.min(state.h - 24, state.terry.y + state.terry.r + 6);
-    state.glass.push(createGlass(gx, gy, state.nextGlassId++));
+    const gy = glassSpawnYAtWaterline(waterY, state.h);
+    state.glass.push(
+      createGlass(gx, gy, state.nextGlassId++, {
+        immuneUntil: state.time + DROP_IMMUNE_SEC,
+      }),
+    );
     dropped = true;
   }
   return { dropped };
@@ -364,6 +391,7 @@ export function update(state, dt) {
 
   for (const g of state.glass) {
     if (g.collected) continue;
+    if (g.immuneUntil && state.time < g.immuneUntil) continue;
     if (overlaps(state.terry.x, state.terry.y, state.terry.r, g.x, g.y, g.r)) {
       const res = collectGlass(state, g);
       if (res.collected) {

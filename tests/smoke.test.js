@@ -17,10 +17,16 @@ import {
   wavePhase,
   WAVE_MAX_DEPTH,
   WAVE_MIN_DEPTH,
+  WAVE_BOUNCE,
+  WAVE_BOUNCE_VY,
   waveOverlapsCrab,
   applyWaveHit,
   afterFinaleReset,
+  isGlassSubmerged,
+  glassSpawnYAtWaterline,
+  spawnGlassInWetBand,
 } from '../src/game.js';
+import { AUDIO_UNLOCK_EVENTS } from '../src/audio.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -71,11 +77,30 @@ describe('page smoke', () => {
   });
 });
 
+describe('Chrome / desktop audio unlock gestures', () => {
+  it('unlock hooks include keyboard + mouse (not touch-only)', () => {
+    expect(AUDIO_UNLOCK_EVENTS).toEqual(
+      expect.arrayContaining(['keydown', 'mousedown', 'pointerdown', 'click', 'touchstart']),
+    );
+    const main = readFileSync(join(root, 'src/main.js'), 'utf8');
+    expect(main).toContain('AUDIO_UNLOCK_EVENTS');
+    expect(main).toContain("addEventListener('mousedown'");
+    expect(main).toContain("addEventListener('click'");
+    expect(main).toContain('keydown');
+  });
+});
+
 describe('score / glass collect', () => {
   it('glass is 1 cent; finale at 25 cents', () => {
     expect(GLASS_CENTS).toBe(1);
     expect(FINALE_CENTS).toBe(25);
     expect(formatCents(7)).toBe('7¢');
+  });
+
+  it('FINALE_CENTS gate stays 25 (lifetimeCollected >= 25)', () => {
+    expect(FINALE_CENTS).toBe(25);
+    const src = readFileSync(join(root, 'src/game.js'), 'utf8');
+    expect(src).toMatch(/lifetimeCollected\s*>=\s*FINALE_CENTS/);
   });
 
   it('collectGlass increments by 1¢ and lifetime', () => {
@@ -94,7 +119,6 @@ describe('score / glass collect', () => {
     state.glass = [g];
     state.terry.x = g.x;
     state.terry.y = g.y;
-    // Keep wave out of the way so collect isn't interrupted
     state.time = 0;
     state.wavePhase = 0;
     state.lastWaterY = waterEdgeY(0, state.h);
@@ -109,7 +133,7 @@ describe('score / glass collect', () => {
 
   it('finale triggers at lifetime 25¢ (not merely HUD score)', () => {
     const state = createState(400, 600);
-    state.score = 10; // HUD lower because of prior wave drops
+    state.score = 10;
     state.lifetimeCollected = 24;
     const g = { id: 99, x: state.terry.x, y: state.terry.y, r: 8, hue: 180, collected: false };
     state.glass.push(g);
@@ -121,7 +145,7 @@ describe('score / glass collect', () => {
     state.lifetimeCollected = res.lifetimeCollected;
     beginFart(state);
     expect(state.mode).toBe('farting');
-    expect(state.lifetimeCollected).toBe(0); // reset so next 25 can loop
+    expect(state.lifetimeCollected).toBe(0);
     expect(state.fartClouds.length).toBeGreaterThan(0);
   });
 
@@ -139,6 +163,44 @@ describe('score / glass collect', () => {
   it('overlaps helper works', () => {
     expect(overlaps(0, 0, 10, 5, 0, 10)).toBe(true);
     expect(overlaps(0, 0, 5, 100, 100, 5)).toBe(false);
+  });
+});
+
+describe('sea glass waterline visibility + spawn', () => {
+  it('glass submerged (hidden) when y < waterline', () => {
+    const waterY = 200;
+    expect(isGlassSubmerged({ y: 150 }, waterY)).toBe(true);
+    expect(isGlassSubmerged({ y: 200 }, waterY)).toBe(false);
+    expect(isGlassSubmerged({ y: 250 }, waterY)).toBe(false);
+  });
+
+  it('main render skips submerged glass (mask flag path)', () => {
+    const main = readFileSync(join(root, 'src/main.js'), 'utf8');
+    expect(main).toContain('isGlassSubmerged');
+    expect(main).toMatch(/if\s*\(\s*isGlassSubmerged/);
+  });
+
+  it('drop / wet-band spawn Y ≈ water surface', () => {
+    const waterY = 180;
+    const h = 600;
+    expect(glassSpawnYAtWaterline(waterY, h)).toBe(180);
+    const { items } = spawnGlassInWetBand(waterY, 400, h, 5, 1);
+    for (const g of items) {
+      expect(g.y).toBeGreaterThanOrEqual(waterY);
+      expect(g.y).toBeLessThanOrEqual(waterY + 6);
+      expect(isGlassSubmerged(g, waterY)).toBe(false);
+    }
+  });
+
+  it('wave-hit drop spawns at waterline Y', () => {
+    const state = createState(400, 600);
+    state.score = 3;
+    state.lastWaterY = 220;
+    state.terry.y = 300;
+    applyWaveHit(state);
+    const dropped = state.glass[state.glass.length - 1];
+    expect(dropped.y).toBe(220);
+    expect(isGlassSubmerged(dropped, 220)).toBe(false);
   });
 });
 
@@ -160,8 +222,13 @@ describe('deep waves + wave hit drop', () => {
 
   it('wave overlap detects crab under water edge', () => {
     const terry = { x: 200, y: 300, r: 14 };
-    expect(waveOverlapsCrab(290, terry)).toBe(true); // water past crab top
+    expect(waveOverlapsCrab(290, terry)).toBe(true);
     expect(waveOverlapsCrab(100, terry)).toBe(false);
+  });
+
+  it('bounce is bigger (noticeable knockback)', () => {
+    expect(WAVE_BOUNCE).toBeGreaterThanOrEqual(100);
+    expect(WAVE_BOUNCE_VY).toBeGreaterThanOrEqual(250);
   });
 
   it('wave hit bounces crab down and drops 1¢ glass when score > 0', () => {
@@ -173,11 +240,15 @@ describe('deep waves + wave hit drop', () => {
     const hit = applyWaveHit(state);
     expect(hit.dropped).toBe(true);
     expect(state.score).toBe(4);
-    expect(state.lifetimeCollected).toBe(8); // lifetime untouched
+    expect(state.lifetimeCollected).toBe(8);
     expect(state.terry.y).toBeGreaterThan(yBefore);
+    expect(state.terry.y - yBefore).toBeGreaterThanOrEqual(Math.min(WAVE_BOUNCE, state.h - yBefore - 40));
+    expect(state.terry.vy).toBeGreaterThanOrEqual(WAVE_BOUNCE_VY);
     expect(state.glass.length).toBe(glassBefore + 1);
     const dropped = state.glass[state.glass.length - 1];
     expect(dropped.collected).toBe(false);
+    expect(dropped.immuneUntil).toBeGreaterThan(state.time);
+    expect(state.pointer.active).toBe(false);
   });
 
   it('wave hit with score 0 still bounces but does not go negative', () => {
@@ -195,10 +266,10 @@ describe('deep waves + wave hit drop', () => {
   it('update fires one waveHit per advancing cycle when overlapped', () => {
     const state = createState(400, 600);
     state.score = 3;
-    state.terry.y = state.h * 0.4; // mid-beach where deep wave will reach
+    state.terry.y = state.h * 0.4;
     state.terry.x = state.w / 2;
-    state.glass = []; // no pickup noise
-    state.time = 1.5; // toward advancing tide
+    state.glass = [];
+    state.time = 1.5;
     state.wavePhase = wavePhase(state.time);
     state.lastWaterY = waterEdgeY(state.wavePhase, state.h);
     state.waveHitThisCycle = false;
@@ -209,7 +280,6 @@ describe('deep waves + wave hit drop', () => {
       const ev = update(state, FIXED_DT);
       if (ev.waveHit) hits += 1;
       minScore = Math.min(minScore, state.score);
-      // Keep dropped glass from being instantly re-collected (isolate hit assert)
       for (const g of state.glass) {
         if (!g.collected) {
           g.x = 10;
@@ -218,8 +288,35 @@ describe('deep waves + wave hit drop', () => {
       }
     }
     expect(hits).toBeGreaterThanOrEqual(1);
-    expect(hits).toBeLessThanOrEqual(2); // at most one per cycle across ~4s
+    expect(hits).toBeLessThanOrEqual(2);
     expect(minScore).toBeLessThan(3);
     expect(state.score).toBeGreaterThanOrEqual(0);
+  });
+
+  it('mobile/touch path: wave hit drops glass even with pointer active', () => {
+    const state = createState(390, 844);
+    state.score = 4;
+    state.lifetimeCollected = 6;
+    state.pointer.active = true;
+    state.pointer.x = state.terry.x;
+    state.pointer.y = state.terry.y;
+    state.lastWaterY = state.terry.y - 5;
+    const glassBefore = state.glass.length;
+    const hit = applyWaveHit(state);
+    expect(hit.dropped).toBe(true);
+    expect(state.pointer.active).toBe(false);
+    expect(state.glass.length).toBe(glassBefore + 1);
+    const dropped = state.glass[state.glass.length - 1];
+    expect(dropped.y).toBe(state.lastWaterY);
+    // Immune so follow-recollect does not eat it immediately
+    state.pointer.active = true;
+    state.pointer.x = dropped.x;
+    state.pointer.y = dropped.y;
+    state.terry.x = dropped.x;
+    state.terry.y = dropped.y;
+    state.waveHitThisCycle = true;
+    const scoreBefore = state.score;
+    update(state, FIXED_DT);
+    expect(state.score).toBe(scoreBefore); // still immune
   });
 });

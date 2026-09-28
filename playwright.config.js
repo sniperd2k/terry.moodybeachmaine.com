@@ -11,7 +11,6 @@ export default defineConfig({
   use: {
     baseURL: process.env.TERRY_BASE_URL || 'http://127.0.0.1:4177',
     trace: 'off',
-    browserName: 'chromium',
   },
   webServer: process.env.TERRY_BASE_URL
     ? undefined
@@ -22,6 +21,15 @@ export default defineConfig({
         timeout: 120000,
       },
   projects: [
+    {
+      name: 'chromium-desktop',
+      use: {
+        browserName: 'chromium',
+        viewport: { width: 1280, height: 720 },
+        hasTouch: false,
+        isMobile: false,
+      },
+    },
     {
       name: 'mobile',
       use: {

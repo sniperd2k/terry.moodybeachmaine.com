@@ -4,6 +4,8 @@ import {
   update,
   activeGlass,
   waterEdgeY,
+  isGlassSubmerged,
+  applyWaveHit,
 } from './game.js';
 import {
   drawBeach,
@@ -14,7 +16,15 @@ import {
   drawSeagull,
   drawHUD,
 } from './draw.js';
-import { unlockAudio, playClink, playWaveWhoosh, playFart } from './audio.js';
+import {
+  unlockAudio,
+  playClink,
+  playWaveWhoosh,
+  playFart,
+  isAudioUnlocked,
+  getAudioState,
+  AUDIO_UNLOCK_EVENTS,
+} from './audio.js';
 
 const canvas = document.getElementById('beach');
 const ctx = canvas.getContext('2d');
@@ -68,6 +78,8 @@ canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture?.(e.pointerId);
   onPointer(e, true);
 });
+canvas.addEventListener('mousedown', () => { unlockAudio(); });
+canvas.addEventListener('click', () => { unlockAudio(); });
 canvas.addEventListener('pointermove', (e) => {
   if (e.buttons || (e.pointerType === 'touch' && state?.pointer.active)) onPointer(e, true);
   else if (e.pointerType === 'mouse') {
@@ -109,13 +121,14 @@ window.addEventListener('keyup', (e) => {
   if (k in state.keys) state.keys[k] = false;
 });
 
-// Capture first gesture anywhere (autoplay unlock even if outside canvas)
+// Capture first gesture anywhere — desktop Chrome needs keydown/mousedown/click,
+// not touchstart-only. Resume AudioContext inside the gesture stack before any play().
 function unlockOnce() {
   unlockAudio();
 }
-window.addEventListener('pointerdown', unlockOnce, { capture: true });
-window.addEventListener('touchstart', unlockOnce, { capture: true, passive: true });
-window.addEventListener('keydown', unlockOnce, { capture: true });
+for (const ev of AUDIO_UNLOCK_EVENTS) {
+  window.addEventListener(ev, unlockOnce, { capture: true, passive: true });
+}
 
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', resize);
@@ -126,7 +139,10 @@ function render() {
   const waterY = waterEdgeY(state.wavePhase, h);
   drawBeach(ctx, w, h, waterY, state.wavePhase);
 
-  for (const g of activeGlass(state)) drawSeaGlass(ctx, g);
+  for (const g of activeGlass(state)) {
+    if (isGlassSubmerged(g, waterY)) continue; // invisible under waterline
+    drawSeaGlass(ctx, g);
+  }
 
   for (const c of state.fartClouds) drawFartCloud(ctx, c);
 
@@ -168,4 +184,8 @@ window.__TERRY__ = {
   getScore: () => state?.score ?? 0,
   getLifetimeCollected: () => state?.lifetimeCollected ?? 0,
   unlockAudio,
+  isAudioUnlocked,
+  getAudioState,
+  AUDIO_UNLOCK_EVENTS,
+  applyWaveHit: () => (state ? applyWaveHit(state) : null),
 };

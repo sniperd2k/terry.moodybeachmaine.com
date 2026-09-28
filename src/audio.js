@@ -1,10 +1,20 @@
 /** Web Audio: 5 distinct glass clinks, wave whoosh, soft fart.
  * Autoplay policy: AudioContext stays suspended until a user gesture.
- * Call unlockAudio() from pointer/key/touch handlers before sounds will play.
+ * Call unlockAudio() from pointer/key/mouse/click handlers before sounds will play.
+ * Desktop Chrome requires resume() inside a real gesture (keydown/mousedown/click/pointerdown),
+ * not touchstart-only.
  */
 
 let ctx = null;
 let unlocked = false;
+/** Gesture events that count for Chrome/Safari autoplay unlock. */
+export const AUDIO_UNLOCK_EVENTS = [
+  'keydown',
+  'mousedown',
+  'pointerdown',
+  'click',
+  'touchstart',
+];
 
 export function ensureAudio() {
   if (typeof window === 'undefined') return null;
@@ -23,7 +33,7 @@ export function ensureAudio() {
   return ctx;
 }
 
-/** Must run inside a user-gesture stack (pointer/key/touch). Unlocks iOS/Chrome autoplay. */
+/** Must run inside a user-gesture stack (key/mouse/pointer/touch). Unlocks Chrome + iOS autoplay. */
 export function unlockAudio() {
   const c = ensureAudio();
   if (!c) return Promise.resolve(null);
@@ -54,11 +64,15 @@ export function isAudioUnlocked() {
   return unlocked && ctx && ctx.state === 'running';
 }
 
+export function getAudioState() {
+  return ctx ? ctx.state : 'none';
+}
+
 function canPlay() {
   const c = ensureAudio();
   if (!c) return null;
   if (c.state !== 'running') {
-    // Best-effort resume if a gesture already happened but state lagged
+    // Best-effort resume if a gesture already unlocked but state lagged
     c.resume().catch(() => {});
     if (c.state !== 'running') return null;
   }
@@ -115,12 +129,14 @@ const CLINKS = [
 ];
 
 export function playClink() {
-  unlockAudio();
+  const c = canPlay();
+  if (!c) return;
   CLINKS[Math.floor(Math.random() * CLINKS.length)]();
 }
 
 export function playWaveWhoosh(dir = 'in') {
-  unlockAudio();
+  const c = canPlay();
+  if (!c) return;
   if (dir === 'in') {
     noiseBurst(0.9, 0.08, 0, 200);
     tone(90, 0.85, 'sine', 0.06, 0, 55);
@@ -131,7 +147,8 @@ export function playWaveWhoosh(dir = 'in') {
 }
 
 export function playFart() {
-  unlockAudio();
+  const c = canPlay();
+  if (!c) return;
   tone(110, 0.35, 'sawtooth', 0.22, 0, 45);
   tone(70, 0.45, 'square', 0.12, 0.05, 30);
   noiseBurst(0.4, 0.1, 0.08, 80);

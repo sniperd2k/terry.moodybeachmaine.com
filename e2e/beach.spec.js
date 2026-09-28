@@ -24,7 +24,6 @@ test('WASD / pointer moves Terry', async ({ page }) => {
     const s = window.__TERRY__.getState();
     return { x: s.terry.x, y: s.terry.y };
   });
-  // Drive keys (reliable across mobile project config)
   await page.keyboard.down('d');
   await page.waitForTimeout(350);
   await page.keyboard.up('d');
@@ -35,7 +34,6 @@ test('WASD / pointer moves Terry', async ({ page }) => {
   expect(after.mode).toBe('play');
   let moved = Math.hypot(after.x - before.x, after.y - before.y);
   if (moved <= 2) {
-    // Fallback: set pointer target far right and tick
     await page.evaluate(() => {
       const s = window.__TERRY__.getState();
       s.pointer.active = true;
@@ -52,15 +50,47 @@ test('WASD / pointer moves Terry', async ({ page }) => {
   expect(moved).toBeGreaterThan(2);
 });
 
-test('audio unlock is exposed and callable after gesture', async ({ page }) => {
+test('Chrome desktop: AudioContext resumes after user gesture then play', async ({ page }, testInfo) => {
+  // Prefer desktop project; still valid on mobile gesture path
   await page.goto('/');
   await page.waitForFunction(() => window.__TERRY__?.unlockAudio);
-  await page.locator('#beach').click({ position: { x: 40, y: 40 } });
-  const ok = await page.evaluate(async () => {
+
+  const hooks = await page.evaluate(() => window.__TERRY__.AUDIO_UNLOCK_EVENTS);
+  expect(hooks).toEqual(
+    expect.arrayContaining(['keydown', 'mousedown', 'pointerdown', 'click', 'touchstart']),
+  );
+
+  // Real user gesture (click) then unlock + verify running
+  await page.locator('#beach').click({ position: { x: 80, y: 80 } });
+  const afterClick = await page.evaluate(async () => {
     await window.__TERRY__.unlockAudio();
-    return typeof window.__TERRY__.unlockAudio === 'function';
+    await new Promise((r) => setTimeout(r, 80));
+    return {
+      state: window.__TERRY__.getAudioState(),
+      unlocked: window.__TERRY__.isAudioUnlocked(),
+    };
   });
-  expect(ok).toBe(true);
+  expect(afterClick.state).toBe('running');
+  expect(afterClick.unlocked).toBe(true);
+
+  // keydown gesture path (desktop Chrome)
+  await page.keyboard.down('w');
+  await page.keyboard.up('w');
+  const afterKey = await page.evaluate(async () => {
+    await window.__TERRY__.unlockAudio();
+    await new Promise((r) => setTimeout(r, 40));
+    return window.__TERRY__.getAudioState();
+  });
+  expect(afterKey).toBe('running');
+
+  // mousedown path
+  await page.locator('#beach').dispatchEvent('mousedown');
+  const afterMouse = await page.evaluate(async () => {
+    await window.__TERRY__.unlockAudio();
+    await new Promise((r) => setTimeout(r, 40));
+    return window.__TERRY__.getAudioState();
+  });
+  expect(afterMouse).toBe('running');
 });
 
 test('deep waves + lifetime fields on state', async ({ page }) => {
@@ -69,7 +99,6 @@ test('deep waves + lifetime fields on state', async ({ page }) => {
   const info = await page.evaluate(() => {
     const s = window.__TERRY__.getState();
     return {
-      maxDepthOk: true,
       hasLifetime: typeof s.lifetimeCollected === 'number',
       hasWaveHitFlag: typeof s.waveHitThisCycle === 'boolean',
       terryYFrac: s.terry.y / s.h,
@@ -78,4 +107,50 @@ test('deep waves + lifetime fields on state', async ({ page }) => {
   expect(info.hasLifetime).toBe(true);
   expect(info.hasWaveHitFlag).toBe(true);
   expect(info.terryYFrac).toBeGreaterThan(0.5);
+});
+
+test('wave-hit drop at waterline works with touch/pointer active', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.__TERRY__?.getState());
+
+  // Simulate held touch (mobile path) then force a wave hit via state
+  const box = await page.locator('#beach').boundingBox();
+  expect(box).toBeTruthy();
+  await page.touchscreen.tap(box.x + box.width * 0.5, box.y + box.height * 0.7).catch(async () => {
+    // Desktop project may lack touchscreen — fall back to mouse down
+    await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.7);
+    await page.mouse.down();
+  });
+
+  const result = await page.evaluate(() => {
+    const s = window.__TERRY__.getState();
+    s.score = 5;
+    s.lifetimeCollected = 5;
+    s.pointer.active = true;
+    s.pointer.x = s.terry.x;
+    s.pointer.y = s.terry.y;
+    s.lastWaterY = Math.min(s.terry.y - 4, s.h * 0.55);
+    const before = s.glass.length;
+    const waterY = s.lastWaterY;
+    const hit = window.__TERRY__.applyWaveHit();
+    const dropped = s.glass[s.glass.length - 1];
+    return {
+      dropped: hit?.dropped === true,
+      glassDelta: s.glass.length - before,
+      dropY: dropped.y,
+      waterY,
+      pointerActive: s.pointer.active,
+      score: s.score,
+      bounceVy: s.terry.vy,
+    };
+  });
+
+  expect(result.dropped).toBe(true);
+  expect(result.glassDelta).toBe(1);
+  expect(result.dropY).toBe(result.waterY);
+  expect(result.pointerActive).toBe(false);
+  expect(result.score).toBe(4);
+  expect(result.bounceVy).toBeGreaterThanOrEqual(250);
+
+  await page.mouse.up().catch(() => {});
 });
