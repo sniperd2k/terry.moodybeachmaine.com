@@ -109,7 +109,7 @@ test('deep waves + lifetime fields on state', async ({ page }) => {
   expect(info.terryYFrac).toBeGreaterThan(0.5);
 });
 
-test('wave-hit drop at waterline works with touch/pointer active', async ({ page }) => {
+test('wave-hit drop below waterline works with touch/pointer active', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => window.__TERRY__?.getState());
 
@@ -139,6 +139,9 @@ test('wave-hit drop at waterline works with touch/pointer active', async ({ page
       glassDelta: s.glass.length - before,
       dropY: dropped.y,
       waterY,
+      spawnBelow: typeof window.__TERRY__.GLASS_SPAWN_BELOW_WATER === 'number'
+        ? window.__TERRY__.GLASS_SPAWN_BELOW_WATER
+        : 64,
       pointerActive: s.pointer.active,
       score: s.score,
       bounceVy: s.terry.vy,
@@ -147,7 +150,8 @@ test('wave-hit drop at waterline works with touch/pointer active', async ({ page
 
   expect(result.dropped).toBe(true);
   expect(result.glassDelta).toBe(1);
-  expect(result.dropY).toBe(result.waterY);
+  expect(result.dropY).toBeGreaterThan(result.waterY);
+  expect(result.dropY).toBe(result.waterY + result.spawnBelow);
   expect(result.pointerActive).toBe(false);
   expect(result.score).toBe(4);
   expect(result.bounceVy).toBeGreaterThanOrEqual(250);

@@ -25,6 +25,7 @@ import {
   afterFinaleReset,
   isGlassSubmerged,
   glassSpawnYAtWaterline,
+  GLASS_SPAWN_BELOW_WATER,
   spawnGlassInWetBand,
   KEY_VECTORS,
   movementFromKeys,
@@ -96,14 +97,14 @@ describe('Chrome / desktop audio unlock gestures', () => {
 });
 
 describe('score / glass collect', () => {
-  it('glass is 1 cent; finale at 25 cents', () => {
+  it('glass is 1 cent; finale at 10 cents', () => {
     expect(GLASS_CENTS).toBe(1);
-    expect(FINALE_CENTS).toBe(25);
+    expect(FINALE_CENTS).toBe(10);
     expect(formatCents(7)).toBe('7¢');
   });
 
-  it('FINALE_CENTS gate stays 25 (lifetimeCollected >= 25)', () => {
-    expect(FINALE_CENTS).toBe(25);
+  it('FINALE_CENTS gate stays 10 (lifetimeCollected >= 10)', () => {
+    expect(FINALE_CENTS).toBe(10);
     const src = readFileSync(join(root, 'src/game.js'), 'utf8');
     expect(src).toMatch(/lifetimeCollected\s*>=\s*FINALE_CENTS/);
   });
@@ -136,16 +137,16 @@ describe('score / glass collect', () => {
     expect(state.lifetimeCollected).toBe(lifeBefore + GLASS_CENTS);
   });
 
-  it('finale triggers at lifetime 25¢ (not merely HUD score)', () => {
+  it('finale triggers at lifetime 10¢ (not merely HUD score)', () => {
     const state = createState(400, 600);
-    state.score = 10;
-    state.lifetimeCollected = 24;
+    state.score = 5;
+    state.lifetimeCollected = 9;
     const g = { id: 99, x: state.terry.x, y: state.terry.y, r: 8, hue: 180, collected: false };
     state.glass.push(g);
     const res = collectGlass(state, g);
     expect(res.finale).toBe(true);
-    expect(res.score).toBe(11);
-    expect(res.lifetimeCollected).toBe(25);
+    expect(res.score).toBe(6);
+    expect(res.lifetimeCollected).toBe(10);
     state.score = res.score;
     state.lifetimeCollected = res.lifetimeCollected;
     beginFart(state);
@@ -156,7 +157,7 @@ describe('score / glass collect', () => {
 
   it('afterFinaleReset clears HUD score but lifetime already 0', () => {
     const state = createState(400, 600);
-    state.score = 25;
+    state.score = 10;
     state.lifetimeCollected = 0;
     beginFart(state);
     afterFinaleReset(state);
@@ -185,26 +186,31 @@ describe('sea glass waterline visibility + spawn', () => {
     expect(main).toMatch(/if\s*\(\s*isGlassSubmerged/);
   });
 
-  it('drop / wet-band spawn Y ≈ water surface', () => {
+  it('drop / wet-band spawn Y below waterline in beach zone', () => {
     const waterY = 180;
     const h = 600;
-    expect(glassSpawnYAtWaterline(waterY, h)).toBe(180);
+    const expected = waterY + GLASS_SPAWN_BELOW_WATER;
+    expect(GLASS_SPAWN_BELOW_WATER).toBeGreaterThanOrEqual(48);
+    expect(glassSpawnYAtWaterline(waterY, h)).toBe(expected);
+    expect(expected).toBeGreaterThan(waterY);
     const { items } = spawnGlassInWetBand(waterY, 400, h, 5, 1);
     for (const g of items) {
-      expect(g.y).toBeGreaterThanOrEqual(waterY);
-      expect(g.y).toBeLessThanOrEqual(waterY + 6);
+      expect(g.y).toBeGreaterThanOrEqual(expected);
+      expect(g.y).toBeLessThanOrEqual(expected + 6);
       expect(isGlassSubmerged(g, waterY)).toBe(false);
     }
   });
 
-  it('wave-hit drop spawns at waterline Y', () => {
+  it('wave-hit drop spawns below waterline in catchable beach zone', () => {
     const state = createState(400, 600);
     state.score = 3;
     state.lastWaterY = 220;
     state.terry.y = 300;
     applyWaveHit(state);
     const dropped = state.glass[state.glass.length - 1];
-    expect(dropped.y).toBe(220);
+    const expected = 220 + GLASS_SPAWN_BELOW_WATER;
+    expect(dropped.y).toBe(expected);
+    expect(dropped.y).toBeGreaterThan(220);
     expect(isGlassSubmerged(dropped, 220)).toBe(false);
   });
 });
@@ -312,7 +318,8 @@ describe('deep waves + wave hit drop', () => {
     expect(state.pointer.active).toBe(false);
     expect(state.glass.length).toBe(glassBefore + 1);
     const dropped = state.glass[state.glass.length - 1];
-    expect(dropped.y).toBe(state.lastWaterY);
+    expect(dropped.y).toBe(state.lastWaterY + GLASS_SPAWN_BELOW_WATER);
+    expect(dropped.y).toBeGreaterThan(state.lastWaterY);
     // Immune so follow-recollect does not eat it immediately
     state.pointer.active = true;
     state.pointer.x = dropped.x;

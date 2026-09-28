@@ -4,7 +4,7 @@
  */
 
 export const GLASS_CENTS = 1;
-export const FINALE_CENTS = 25;
+export const FINALE_CENTS = 10;
 export const TERRY_RADIUS = 14;
 export const GLASS_RADIUS = 8;
 export const TERRY_SPEED = 160; // px/sec WASD + arrows
@@ -22,6 +22,8 @@ export const WAVE_BOUNCE = 110;
 export const WAVE_BOUNCE_VY = 280;
 /** Seconds freshly dropped glass cannot be re-collected (touch follow fix). */
 export const DROP_IMMUNE_SEC = 0.45;
+/** Px below waterline for drop/deposit spawn (catchable beach / dry playable zone). */
+export const GLASS_SPAWN_BELOW_WATER = 64;
 
 /** @deprecated alias kept for clarity in docs */
 export const GLASS_POINTS = GLASS_CENTS;
@@ -65,9 +67,10 @@ export function isGlassSubmerged(g, waterY) {
   return g.y < waterY;
 }
 
-/** Drop / deposit spawn Y sits on the current water surface (visible, not submerged). */
+/** Drop / deposit spawn Y below waterline into beach so Terry can reach it (not submerged). */
 export function glassSpawnYAtWaterline(waterY, h) {
-  return Math.min((h ?? 1e9) - 24, Math.max(0, waterY));
+  const y = waterY + GLASS_SPAWN_BELOW_WATER;
+  return Math.min((h ?? 1e9) - 24, Math.max(0, y));
 }
 
 export function spawnGlassInWetBand(waterY, w, h, count, nextId) {
@@ -76,7 +79,7 @@ export function spawnGlassInWetBand(waterY, w, h, count, nextId) {
   const surfaceY = glassSpawnYAtWaterline(waterY, h);
   for (let i = 0; i < count; i++) {
     const x = 24 + Math.random() * (w - 48);
-    // Spawn at waterline (± few px into sand so piece is visible, not submerged)
+    // Spawn below waterline in beach zone (± few px jitter; never submerged)
     const y = surfaceY + Math.random() * 6;
     items.push(createGlass(x, y, id++));
   }
@@ -206,7 +209,7 @@ export function applyWaveHit(state) {
   let dropped = false;
   if (state.score > 0) {
     state.score -= GLASS_CENTS;
-    // Spawn at waterline, well beside crab, with brief collect immunity (touch path)
+    // Spawn below waterline on beach, well beside crab, with brief collect immunity (touch path)
     const side = Math.random() < 0.5 ? -1 : 1;
     const gx = Math.max(
       GLASS_RADIUS + 4,
@@ -229,7 +232,7 @@ export function applyWaveHit(state) {
 export function beginFart(state) {
   state.mode = 'farting';
   state.fartTimer = 0;
-  // Reset lifetime so the next 25¢ collected can fire finale again
+  // Reset lifetime so the next 10¢ collected can fire finale again
   state.lifetimeCollected = 0;
   state.fartClouds = [];
   for (let i = 0; i < 16; i++) {
